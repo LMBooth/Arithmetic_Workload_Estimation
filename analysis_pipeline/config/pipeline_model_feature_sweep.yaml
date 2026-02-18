@@ -1,0 +1,43 @@
+version: 1
+
+paths:
+  bids_root: "./data/bids_arithmetic"
+  python_executable: "python"
+
+reports:
+  run_manifest: "analysis_pipeline/reports/run_manifest_model_feature_sweep.json"
+
+stages:
+  stage0: false
+  stage1: false
+  stage2: false
+  stage3: false
+  stage4: false
+  stage5: false
+  stage6: true
+  stage6_confusions: true
+
+stage6:
+  run_tag_prefix: "model_feature_sweep"
+  results_json_template: "analysis_pipeline/reports/ml_results_{scenario}_model_feature_sweep.json"
+  summary_md_template: "analysis_pipeline/reports/ml_summary_{scenario}_model_feature_sweep.md"
+  base_args:
+    datasets: ["eeg", "ecg", "pupil", "fused"]
+    protocols: ["loso", "group_holdout", "within_participant"]
+    models: ["logreg", "knn", "svm", "gaussian_nb", "decision_tree", "mlp", "rf", "lstm1d", "gru1d", "cnn1d", "transformer"]
+    feature_selectors: ["none", "anova", "mutual_info", "l1", "tree"]
+    inner_folds: 2
+    max_param_combos: 2
+    max_outer_splits_per_protocol: 1
+    clip_lower_quantile: 0.01
+    clip_upper_quantile: 0.99
+    random_seed: 42
+  class_scenarios:
+    - name: "all_bins"
+
+stage6_confusions:
+  out_json_template: "analysis_pipeline/reports/confusion_highlights_{scenario}_model_feature_sweep.json"
+  out_md_template: "analysis_pipeline/reports/confusion_highlights_{scenario}_model_feature_sweep.md"
+  args:
+    metric: "balanced_accuracy_mean"
+    top_k_per_protocol: 1

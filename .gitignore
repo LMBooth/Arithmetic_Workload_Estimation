@@ -1,0 +1,26 @@
+﻿# Python cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Local data and generated outputs
+data/
+analysis_pipeline/derivatives/
+analysis_pipeline/features/
+analysis_pipeline/models/
+analysis_pipeline/reports/
+
+# Keep folder structure if needed
+!analysis_pipeline/derivatives/.gitkeep
+!analysis_pipeline/features/.gitkeep
+!analysis_pipeline/models/.gitkeep
+!analysis_pipeline/reports/.gitkeep

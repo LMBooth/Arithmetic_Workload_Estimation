@@ -1,0 +1,65 @@
+version: 1
+
+paths:
+  bids_root: "./data/bids_arithmetic"
+  python_executable: "python"
+
+reports:
+  run_manifest: "analysis_pipeline/reports/run_manifest_class_variants.json"
+
+stages:
+  stage0: false
+  stage1: false
+  stage2: false
+  stage3: false
+  stage4: false
+  stage5: false
+  stage6: true
+  stage6_confusions: true
+
+stage6:
+  run_tag_prefix: "class_variant"
+  results_json_template: "analysis_pipeline/reports/ml_results_{scenario}.json"
+  summary_md_template: "analysis_pipeline/reports/ml_summary_{scenario}.md"
+  base_args:
+    split_manifest: "analysis_pipeline/features/split_manifest_tutorial_baseline.json"
+    datasets: ["eeg", "ecg", "pupil", "fused"]
+    protocols: ["loso", "group_holdout", "within_participant"]
+    models: ["logreg", "knn", "svm", "gaussian_nb", "decision_tree", "mlp", "rf", "lstm1d", "gru1d", "cnn1d", "transformer"]
+    feature_selectors: ["none"]
+    inner_folds: 3
+    max_param_combos: 3
+    max_outer_splits_per_protocol: 2
+    clip_lower_quantile: 0.01
+    clip_upper_quantile: 0.99
+    random_seed: 42
+    baseline_from_tutorial_label: "baseline"
+  class_scenarios:
+    - name: "original_8_tutorial_baseline"
+    - name: "omit_hardest_keep_baseline"
+      drop_labels: ["6.0-6.9"]
+    - name: "baseline_vs_any_task_binary"
+      merge_map:
+        "0.6-1.5": "task"
+        "1.5-2.4": "task"
+        "2.4-3.3": "task"
+        "3.3-4.2": "task"
+        "4.2-5.1": "task"
+        "5.1-6.0": "task"
+        "6.0-6.9": "task"
+    - name: "baseline_plus_grouped_4class"
+      drop_labels: ["6.0-6.9"]
+      merge_map:
+        "0.6-1.5": "low_1_2"
+        "1.5-2.4": "low_1_2"
+        "2.4-3.3": "mid_3_4"
+        "3.3-4.2": "mid_3_4"
+        "4.2-5.1": "high_5_6"
+        "5.1-6.0": "high_5_6"
+
+stage6_confusions:
+  out_json_template: "analysis_pipeline/reports/confusion_highlights_{scenario}.json"
+  out_md_template: "analysis_pipeline/reports/confusion_highlights_{scenario}.md"
+  args:
+    metric: "balanced_accuracy_mean"
+    top_k_per_protocol: 1
