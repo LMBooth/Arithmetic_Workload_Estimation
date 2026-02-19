@@ -1,0 +1,211 @@
+{
+  "bids_root": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/data/bids_arithmetic",
+  "task": "arithmetic",
+  "subjects_processed": 18,
+  "total_trials": 1260,
+  "total_main_trials": 1134,
+  "total_tutorial_trials": 126,
+  "total_trials_analysis_included": 1260,
+  "out_tsv": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/trial_table_bids_arithmetic.tsv",
+  "subject_summaries": [
+    {
+      "subject": "sub-001",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-003",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-004",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-005",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-006",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 2,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-007",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-008",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 2,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-009",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-010",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-011",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-012",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-013",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-014",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-015",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-016",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-018",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-019",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    },
+    {
+      "subject": "sub-020",
+      "total_trials": 70,
+      "tutorial_trials": 7,
+      "main_trials": 63,
+      "started_arithmetic_markers": 1,
+      "finished_arithmetic_markers": 1,
+      "started_tutorial_markers": 1,
+      "finished_tutorial_markers": 1,
+      "anomalies": []
+    }
+  ],
+  "anomalies": []
+}

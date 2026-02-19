@@ -1,0 +1,37 @@
+{
+  "bids_root": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/data/bids_arithmetic",
+  "task": "arithmetic",
+  "subjects_processed": 18,
+  "out_root": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/derivatives/cleaned",
+  "preprocess_log_tsv": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/preprocess_log.tsv",
+  "parameters": {
+    "eeg_notch_hz": 50.0,
+    "eeg_bandpass_hz": [
+      1.0,
+      40.0
+    ],
+    "eeg_interpolate_bads": true,
+    "run_ica": false,
+    "ica_max_components": 15,
+    "ica_max_ecg_components": 2,
+    "ecg_broad_bandpass_hz": [
+      0.5,
+      40.0
+    ],
+    "ecg_peak_bandpass_hz": [
+      5.0,
+      25.0
+    ],
+    "pupil_conf_threshold": 0.6,
+    "pupil_smooth_seconds": 0.2,
+    "pupil_target_sfreq_hz": 100.0,
+    "random_state": 42
+  },
+  "status_counts": {
+    "eeg_ok": 18,
+    "ecg_ok": 18,
+    "pupil_ok": 18,
+    "any_error": 0
+  },
+  "mean_ecg_hr_bpm": 114.14394444444444
+}

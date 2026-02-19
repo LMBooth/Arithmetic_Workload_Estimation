@@ -17,8 +17,10 @@ pupil,15,pupil_p10
 pupil,16,pupil_p90
 pupil,17,pupil_peak_dilation
 pupil,18,pupil_peak_dilation_delta_base
-pupil,19,pupil_slope_per_s
-pupil,20,pupil_std
-pupil,21,pupil_valid_coverage_ratio
-pupil,22,pupil_vel_max_abs
-pupil,23,pupil_vel_mean_abs
+pupil,19,pupil_peak_time_s
+pupil,20,pupil_slope_per_s
+pupil,21,pupil_std
+pupil,22,pupil_tepr_latency_s
+pupil,23,pupil_valid_coverage_ratio
+pupil,24,pupil_vel_max_abs
+pupil,25,pupil_vel_mean_abs

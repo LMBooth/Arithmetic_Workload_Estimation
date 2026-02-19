@@ -1,0 +1,19 @@
+participant_id	analysis_included	has_eeg	has_ecg	has_pupil	eeg_status	eeg_bad_count	eeg_bad_channels	eeg_interpolated	eeg_montage_applied	eeg_ica_applied	eeg_ica_excluded_count	eeg_channels_out	eeg_sfreq_hz	ecg_status	ecg_samples	ecg_sfreq_hz	ecg_hr_mean_bpm	ecg_hr_median_bpm	ecg_hr_valid_ratio	pupil_status	pupil_samples_in	pupil_samples_out	pupil_masked_pct	pupil_target_sfreq_hz	notes
+sub-001	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	172704	250.000	115.783	119.048	0.980	ok	164253	69103	10.903	100.000	
+sub-003	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	189126	250.000	106.877	86.708	0.971	ok	179852	75654	34.831	100.000	
+sub-004	true	true	true	true	ok	1	FP2	true	true	false	0	19	250.000	ok	193128	250.000	105.175	97.403	0.918	ok	183736	77252	17.196	100.000	
+sub-005	true	true	true	true	ok	2	T5,F8	true	true	false	0	19	250.000	ok	230124	250.000	146.354	154.639	0.706	ok	218291	92056	22.045	100.000	
+sub-006	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	206130	250.000	125.061	145.631	0.945	ok	196237	82457	8.214	100.000	
+sub-007	true	true	true	true	ok	2	FP2,FP1	true	true	false	0	19	250.000	ok	214158	250.000	116.587	116.279	0.727	ok	203391	85707	21.062	100.000	
+sub-008	true	true	true	true	ok	1	FP2	true	true	false	0	19	250.000	ok	384246	250.000	111.721	94.340	0.890	ok	363460	153704	56.700	100.000	
+sub-009	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	214458	250.000	104.736	92.025	0.618	ok	203773	85754	33.402	100.000	
+sub-010	true	true	true	true	ok	1	C4	true	true	false	0	19	250.000	ok	267384	250.000	134.713	151.515	0.920	ok	254337	106956	33.692	100.000	
+sub-011	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	299502	250.000	124.420	114.504	0.760	ok	285564	120102	9.532	100.000	
+sub-012	true	true	true	true	ok	2	F7,FP1	true	true	false	0	19	250.000	ok	198000	250.000	111.022	92.025	0.895	ok	188518	79206	3.901	100.000	
+sub-013	true	true	true	true	ok	1	O1	true	true	false	0	19	250.000	ok	200502	250.000	105.073	87.209	0.934	ok	190673	80205	20.380	100.000	
+sub-014	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	223128	250.000	125.896	132.743	0.949	ok	212331	89252	4.638	100.000	
+sub-015	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	205530	250.000	148.237	151.515	0.984	ok	194955	82203	12.954	100.000	
+sub-016	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	284628	250.000	89.376	78.947	0.981	ok	268599	113856	52.794	100.000	
+sub-018	true	true	true	true	ok	1	FP2	true	true	false	0	19	250.000	ok	227748	250.000	108.539	100.671	0.710	ok	215354	91103	25.032	100.000	
+sub-019	true	true	true	true	ok	4	Cz,F7,FP2,FP1	true	true	false	0	19	250.000	ok	208632	250.000	92.352	82.418	0.942	ok	198583	83451	15.243	100.000	
+sub-020	true	true	true	true	ok	0		false	true	false	0	19	250.000	ok	205968	250.000	82.669	74.257	0.980	ok	193946	82402	6.847	100.000	

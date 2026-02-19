@@ -1,0 +1,72 @@
+{
+  "bids_root": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/data/bids_arithmetic",
+  "task": "arithmetic",
+  "trial_table_path": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/trial_table_bids_arithmetic.tsv",
+  "subject_table_path": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/qc_subject_table.tsv",
+  "fig_dir": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/figures",
+  "modality_coverage": {
+    "n_subjects": 18,
+    "n_with_eeg": 18,
+    "n_with_ecg": 18,
+    "n_with_pupil": 18,
+    "n_with_all_modalities": 18
+  },
+  "analysis_included_subjects": 18,
+  "trial_rows_total": 1260,
+  "trial_rows_main": 1134,
+  "trial_rows_tutorial": 126,
+  "dropped_samples_main_per_trial_mean_distribution": {
+    "mean": 11.78747795414462,
+    "median": 10.404761904761905,
+    "p95": 17.80952380952381
+  },
+  "pupil_mean_confidence_distribution": {
+    "mean": 0.780990948071311,
+    "median": 0.8097416263275721,
+    "p10": 0.6443695994812444
+  },
+  "ecg_hr_mean_distribution_bpm": {
+    "mean": 113.8671823376452,
+    "median": 113.75171219976906,
+    "p05": 89.37629983866398,
+    "p95": 146.35442182411182
+  },
+  "ecg_baseline_hr_mean_distribution_bpm": {
+    "mean": 104.67723885800055,
+    "median": 99.2818824153953,
+    "p05": 79.8495386931485,
+    "p95": 144.13874387130815
+  },
+  "ecg_task_hr_mean_distribution_bpm": {
+    "mean": 113.93879649243367,
+    "median": 114.32306698426828,
+    "p05": 89.7874398321368,
+    "p95": 147.5312388850225
+  },
+  "ecg_task_minus_baseline_hr_mean_distribution_bpm": {
+    "mean": 9.261557634433123,
+    "median": 4.1112719134019216,
+    "p05": -3.871712361309349,
+    "p95": 37.192935280631886
+  },
+  "subjects_with_ecg_quality_fail": [],
+  "subjects_with_ecg_quality_warn": [],
+  "subjects_with_low_pupil_confidence_lt_0_6": [
+    "sub-008",
+    "sub-016"
+  ],
+  "anomaly_count": 4,
+  "anomalies": [
+    "sub-006: Unexpected started_arithmetic marker count: 2.",
+    "sub-008: Unexpected started_arithmetic marker count: 2.",
+    "sub-008: Low pupil mean confidence (0.471).",
+    "sub-016: Low pupil mean confidence (0.537)."
+  ],
+  "figure_paths": {
+    "dropped_samples_main_per_subject": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/figures/dropped_samples_main_per_subject.png",
+    "pupil_mean_confidence_per_subject": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/figures/pupil_mean_confidence_per_subject.png",
+    "ecg_mean_hr_per_subject": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/figures/ecg_mean_hr_per_subject.png",
+    "ecg_baseline_vs_task_hr_per_subject": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/figures/ecg_baseline_vs_task_hr_per_subject.png",
+    "modality_coverage_heatmap": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/figures/modality_coverage_heatmap.png"
+  }
+}

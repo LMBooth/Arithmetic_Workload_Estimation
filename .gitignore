@@ -1,4 +1,4 @@
-﻿# Python cache
+# Python cache
 __pycache__/
 *.py[cod]
 
@@ -12,12 +12,29 @@ Thumbs.db
 .vscode/
 .idea/
 
-# Local data and generated outputs
+# Raw/local data
 data/
+
+# Generated pipeline artifacts (large / reproducible)
 analysis_pipeline/derivatives/
 analysis_pipeline/features/
 analysis_pipeline/models/
-analysis_pipeline/reports/
+
+# Large report artifacts
+analysis_pipeline/reports/confusion_pngs/
+analysis_pipeline/reports/run_logs/
+analysis_pipeline/reports/figures/
+analysis_pipeline/reports/report_assets_*/
+
+# Large intermediate report files
+analysis_pipeline/reports/ml_results*.json
+analysis_pipeline/reports/confusion_highlights*.json
+analysis_pipeline/reports/epoch_manifest.tsv
+analysis_pipeline/reports/trial_table_*.tsv
+
+# Runtime files
+analysis_pipeline/reports/*.pid
+analysis_pipeline/reports/*.log
 
 # Keep folder structure if needed
 !analysis_pipeline/derivatives/.gitkeep

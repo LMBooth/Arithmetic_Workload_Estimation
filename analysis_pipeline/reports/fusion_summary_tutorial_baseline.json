@@ -1,0 +1,110 @@
+{
+  "bids_root": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/data/bids_arithmetic",
+  "task": "arithmetic",
+  "trial_table": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/reports/trial_table_bids_arithmetic.tsv",
+  "features_dir": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/features",
+  "target": "difficulty_bin",
+  "include_tutorial": true,
+  "modalities_selected": [
+    "eeg",
+    "ecg",
+    "pupil"
+  ],
+  "dropout_policy": "absolute",
+  "dropout_threshold": 35.0,
+  "dropout_percentile": 95.0,
+  "keep_dropout_failed": false,
+  "require_all_selected_modalities": true,
+  "subjects_filter": null,
+  "trial_rows_considered": 1260,
+  "trial_drop_samples_distribution": {
+    "n": 1260,
+    "p50": 8.0,
+    "p90": 23.0,
+    "p95": 35.0,
+    "p99": 65.0,
+    "max": 288.0
+  },
+  "modality_stats": {
+    "eeg": {
+      "input_rows": 1260,
+      "missing_trial_meta": 0,
+      "tutorial_filtered": 0,
+      "missing_difficulty": 0,
+      "dropout_filtered": 60,
+      "rows_out": 1200
+    },
+    "ecg": {
+      "input_rows": 1260,
+      "missing_trial_meta": 0,
+      "tutorial_filtered": 0,
+      "missing_difficulty": 0,
+      "dropout_filtered": 60,
+      "rows_out": 1200
+    },
+    "pupil": {
+      "input_rows": 1260,
+      "missing_trial_meta": 0,
+      "tutorial_filtered": 0,
+      "missing_difficulty": 0,
+      "dropout_filtered": 60,
+      "rows_out": 1200
+    }
+  },
+  "modality_duplicate_keys_ignored": {
+    "eeg": 0,
+    "ecg": 0,
+    "pupil": 0
+  },
+  "rows_out": {
+    "eeg": 1200,
+    "ecg": 1200,
+    "pupil": 1200,
+    "fused": 1200
+  },
+  "dataset_class_counts": {
+    "eeg": {
+      "0.6-1.5": 174,
+      "1.5-2.4": 176,
+      "2.4-3.3": 171,
+      "3.3-4.2": 173,
+      "4.2-5.1": 166,
+      "5.1-6.0": 169,
+      "6.0-6.9": 171
+    },
+    "ecg": {
+      "0.6-1.5": 174,
+      "1.5-2.4": 176,
+      "2.4-3.3": 171,
+      "3.3-4.2": 173,
+      "4.2-5.1": 166,
+      "5.1-6.0": 169,
+      "6.0-6.9": 171
+    },
+    "pupil": {
+      "0.6-1.5": 174,
+      "1.5-2.4": 176,
+      "2.4-3.3": 171,
+      "3.3-4.2": 173,
+      "4.2-5.1": 166,
+      "5.1-6.0": 169,
+      "6.0-6.9": 171
+    },
+    "fused": {
+      "0.6-1.5": 174,
+      "1.5-2.4": 176,
+      "2.4-3.3": 171,
+      "3.3-4.2": 173,
+      "4.2-5.1": 166,
+      "5.1-6.0": 169,
+      "6.0-6.9": 171
+    }
+  },
+  "outputs": {
+    "features_ml_eeg_tsv": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/features/features_ml_eeg_tutorial_baseline.tsv",
+    "features_ml_ecg_tsv": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/features/features_ml_ecg_tutorial_baseline.tsv",
+    "features_ml_pupil_tsv": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/features/features_ml_pupil_tutorial_baseline.tsv",
+    "features_fused_tsv": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/features/features_fused_tutorial_baseline.tsv",
+    "split_manifest_json": "/home/liam/Documents/GitHub/Arithmetic_Workload_Estimation-main/analysis_pipeline/features/split_manifest_tutorial_baseline.json"
+  }
+}
