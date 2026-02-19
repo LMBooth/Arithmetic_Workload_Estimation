@@ -19,3 +19,20 @@ Supporting tables are in `docs/tables/`, including:
 - `docs/tables/ml_numeric_feature_columns_fused.csv`
 - `docs/tables/ml_feature_prefix_counts.csv`
 - `docs/tables/ml_numeric_feature_prefix_counts.csv`
+
+## Cross-Machine Note (Linux -> Windows)
+
+Baseline ML result JSONs are large and gitignored, so they do not come through `git pull`.
+
+To regenerate full baseline confusion reports on Windows, copy from Linux:
+
+- `analysis_pipeline/reports/ml_results_baseline_*_baseline.json`
+- `analysis_pipeline/reports/ml_results_baseline_*_baseline_advanced_nn.json`
+
+Then run `analysis_pipeline/stage6_highlight_confusions.py` on those files to rebuild:
+
+- `analysis_pipeline/reports/confusion_highlights_baseline_*.md`
+- `analysis_pipeline/reports/confusion_highlights_baseline_*.json`
+- `analysis_pipeline/reports/confusion_pngs/*`
+
+See the handoff checklist and commands in `README.md`.

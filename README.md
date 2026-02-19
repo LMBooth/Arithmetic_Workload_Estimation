@@ -81,6 +81,60 @@ python .\analysis_pipeline\run_pipeline.py `
   --only stage6 stage6_confusions
 ```
 
+## Linux -> Windows Handoff (Baseline Reports)
+
+`git pull` alone is not enough to reproduce baseline report assets on Windows. Large ML/report artifacts are intentionally ignored in `.gitignore`:
+
+- `analysis_pipeline/reports/ml_results*.json`
+- `analysis_pipeline/reports/confusion_highlights*.json`
+- `analysis_pipeline/reports/confusion_pngs/`
+- `analysis_pipeline/features/` (entire folder)
+
+If the Linux machine already produced the baseline runs, copy these files from Linux into the same paths on Windows.
+
+Required files to rebuild all baseline confusion reports on Windows:
+
+- `analysis_pipeline/reports/ml_results_baseline_*_baseline.json` (classic baseline track, 5 files)
+- `analysis_pipeline/reports/ml_results_baseline_*_baseline_advanced_nn.json` (advanced NN baseline track, 5 files)
+
+Expected scenarios in those filenames:
+
+- `baseline_all_bins`
+- `baseline_omit_hardest`
+- `baseline_low_high_omit_hardest`
+- `baseline_grouped_4class_omit_hardest`
+- `baseline_omit_easiest`
+
+If you need to rerun baseline ML on Windows (not only regenerate confusion reports), also copy:
+
+- `analysis_pipeline/features/` (all feature tables/manifests referenced by Stage 6)
+- especially `analysis_pipeline/features/split_manifest_tutorial_baseline.json`
+
+Rebuild confusion reports for all available `ml_results*.json` files (includes baseline + advanced if present):
+
+```powershell
+Get-ChildItem .\analysis_pipeline\reports\ml_results*.json | ForEach-Object {
+  $scenario = $_.BaseName -replace '^ml_results_', ''
+  python .\analysis_pipeline\stage6_highlight_confusions.py `
+    --results-json $_.FullName `
+    --out-json ("analysis_pipeline/reports/confusion_highlights_{0}.json" -f $scenario) `
+    --out-md ("analysis_pipeline/reports/confusion_highlights_{0}.md" -f $scenario) `
+    --metric balanced_accuracy_mean `
+    --top-k-per-protocol 1 `
+    --include-all `
+    --out-png-dir analysis_pipeline/reports/confusion_pngs
+}
+```
+
+Quick check that baseline inputs arrived:
+
+```powershell
+Get-ChildItem .\analysis_pipeline\reports\ml_results_baseline_*_baseline.json | Measure-Object
+Get-ChildItem .\analysis_pipeline\reports\ml_results_baseline_*_baseline_advanced_nn.json | Measure-Object
+```
+
+Each command should report `Count = 5`.
+
 ## Stage Summary
 
 - Stage 0: canonical trial table from BIDS events.
