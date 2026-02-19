@@ -700,9 +700,13 @@ def main() -> None:
         subject_dirs = [path for path in subject_dirs if path.name in wanted]
     if not subject_dirs:
         raise FileNotFoundError("No matching subject directories found.")
+    print(
+        f"Stage 2 starting. task={task} subjects={len(subject_dirs)} "
+        f"overwrite={bool(args.overwrite)}"
+    )
 
     logs: list[dict[str, str]] = []
-    for subject_dir in subject_dirs:
+    for subject_idx, subject_dir in enumerate(subject_dirs, start=1):
         paths = _resolve_subject_paths(subject_dir, task)
         analysis_included = (
             (participants.get(paths.subject, {}).get("analysis_included") or "n/a")
@@ -714,7 +718,8 @@ def main() -> None:
         log = _process_subject(paths, out_root, analysis_included, args)
         logs.append(log)
         print(
-            f"{paths.subject}: EEG={log['eeg_status']} ECG={log['ecg_status']} "
+            f"[Subject {subject_idx}/{len(subject_dirs)}] {paths.subject}: "
+            f"EEG={log['eeg_status']} ECG={log['ecg_status']} "
             f"Pupil={log['pupil_status']}"
         )
 

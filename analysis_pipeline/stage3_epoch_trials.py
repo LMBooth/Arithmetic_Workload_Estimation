@@ -835,6 +835,10 @@ def main() -> None:
     subjects = _subject_list(rows, requested_subjects)
     if not subjects:
         raise FileNotFoundError("No subject rows found after subject filtering.")
+    print(
+        f"Stage 3 starting. task={task} subjects={len(subjects)} "
+        f"window_mode={args.window_mode}"
+    )
 
     rows_by_subject: dict[str, list[dict[str, str]]] = {subject: [] for subject in subjects}
     for row in rows:
@@ -849,8 +853,9 @@ def main() -> None:
     manifest_rows: list[dict[str, str]] = []
     subject_summary_rows: list[dict[str, str]] = []
 
-    for subject in subjects:
+    for subject_idx, subject in enumerate(subjects, start=1):
         subject_rows = rows_by_subject[subject]
+        print(f"[Subject {subject_idx}/{len(subjects)}] {subject}: trials={len(subject_rows)}")
         modalities = _load_subject_modalities(subject, task, cleaned_root)
         subject_out = out_root / subject
         _write_subject_modality_metadata(subject, task, modalities, subject_out, args)
@@ -1123,7 +1128,7 @@ def main() -> None:
             }
         )
         print(
-            f"{subject}: segments={subject_segment_count} "
+            f"  Completed {subject}: segments={subject_segment_count} "
             f"multimodal_kept={subject_summary_rows[-1]['multimodal_kept']}"
         )
 

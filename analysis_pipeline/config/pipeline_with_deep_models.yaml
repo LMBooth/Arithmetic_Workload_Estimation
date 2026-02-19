@@ -30,13 +30,14 @@ stage6:
   base_args:
     datasets: ["eeg", "ecg", "pupil", "fused"]
     protocols: ["loso", "group_holdout", "within_participant"]
-    models: ["logreg", "knn", "svm", "gaussian_nb", "decision_tree", "mlp", "rf", "lstm1d", "gru1d", "cnn1d", "transformer"]
+    models: ["lstm1d", "gru1d", "cnn1d", "transformer", "bilstm1d", "bigru1d", "cnn1d_deep", "transformer_xl"]
     inner_folds: 2
     max_param_combos: 2
     max_outer_splits_per_protocol: 2
     clip_lower_quantile: 0.01
     clip_upper_quantile: 0.99
     random_seed: 42
+    torch_device: "auto"
   class_scenarios:
     - name: "all_bins"
     - name: "omit_easiest"
@@ -57,3 +58,5 @@ stage6_confusions:
   args:
     metric: "balanced_accuracy_mean"
     top_k_per_protocol: 1
+    include_all: true
+    out_png_dir: "analysis_pipeline/reports/confusion_pngs"

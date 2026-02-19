@@ -22,11 +22,15 @@ if (-not [string]::IsNullOrWhiteSpace($DatasetId)) {
     $downloadArgs += @("--archive-url", $ArchiveUrl)
 }
 
+Write-Host "[1/2] Downloading BIDS dataset..."
+Write-Host "  Target: $Target"
 python @downloadArgs
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
+Write-Host "[2/2] Running analysis pipeline..."
+Write-Host "  Config: $Config"
 python analysis_pipeline/run_pipeline.py --config $Config
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE

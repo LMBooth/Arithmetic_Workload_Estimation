@@ -7,6 +7,7 @@ import platform
 import shlex
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -414,6 +415,14 @@ def main() -> None:
     run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     logs_dir = _reports_dir() / "run_logs" / run_stamp
     workdir = _analysis_root().parent
+    pipeline_start = time.time()
+    total_steps = len(steps)
+
+    print("Pipeline run starting.")
+    print(f"  Config: {config_path}")
+    print(f"  Working directory: {workdir}")
+    print(f"  Dry run: {bool(args.dry_run)}")
+    print(f"  Planned steps: {total_steps}")
 
     manifest: dict[str, Any] = {
         "pipeline_started_utc": _utc_now(),
@@ -433,12 +442,19 @@ def main() -> None:
     }
 
     try:
-        for step in steps:
-            print(f"[{step.stage}] {step.name}")
+        for step_index, step in enumerate(steps, start=1):
+            step_start = time.time()
+            print(f"[{step_index}/{total_steps}] [{step.stage}] {step.name}")
             print("  " + " ".join(shlex.quote(part) for part in step.command))
             step_result = _run_step(step=step, workdir=workdir, logs_dir=logs_dir, dry_run=args.dry_run)
             manifest["steps"].append(step_result)
+            elapsed_s = time.time() - step_start
+            print(f"  Status: {step_result['status']} (elapsed={elapsed_s:.1f}s)")
             if step_result["return_code"] != 0:
+                if step_result.get("stdout_log"):
+                    print(f"  stdout log: {step_result['stdout_log']}")
+                if step_result.get("stderr_log"):
+                    print(f"  stderr log: {step_result['stderr_log']}")
                 raise RuntimeError(f"Step failed: {step.name} (return_code={step_result['return_code']})")
         manifest["status"] = "dry_run" if args.dry_run else "success"
     except Exception as exc:  # noqa: BLE001
@@ -449,6 +465,8 @@ def main() -> None:
         manifest["pipeline_finished_utc"] = _utc_now()
         manifest_out.parent.mkdir(parents=True, exist_ok=True)
         manifest_out.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        print(f"Pipeline status: {manifest['status']}")
+        print(f"Pipeline elapsed seconds: {time.time() - pipeline_start:.1f}")
         print(f"Run manifest: {manifest_out}")
 
 

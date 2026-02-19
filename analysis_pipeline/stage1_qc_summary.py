@@ -988,12 +988,17 @@ def main() -> None:
     subject_dirs = sorted(path for path in bids_root.glob("sub-*") if path.is_dir())
     if not subject_dirs:
         raise FileNotFoundError(f"No subject directories found in {bids_root}")
+    print(
+        f"Stage 1 starting. task={task} subjects={len(subject_dirs)} "
+        f"trial_rows={len(trial_rows)}"
+    )
 
     subject_rows: list[dict[str, Any]] = []
     all_anomalies: list[str] = []
-    for subject_dir in subject_dirs:
+    for subject_idx, subject_dir in enumerate(subject_dirs, start=1):
         paths = _resolve_subject_paths(subject_dir, task)
         subject = paths.subject
+        print(f"[Subject {subject_idx}/{len(subject_dirs)}] {subject}")
         analysis_included = (
             (participants.get(subject, {}).get("analysis_included") or "n/a").strip().lower()
         )

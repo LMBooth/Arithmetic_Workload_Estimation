@@ -7,7 +7,9 @@ import hashlib
 import itertools
 import json
 import math
+import os
 import random
+import time
 import warnings
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
@@ -33,6 +35,11 @@ from sklearn.preprocessing import RobustScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
 
+# Avoid torch dynamo/onnx import-time dependency issues in this pipeline runtime.
+os.environ.setdefault("TORCH_DISABLE_DYNAMO", "1")
+os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
+os.environ.setdefault("PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION", "python")
+
 try:
     import torch
     import torch.nn as nn
@@ -45,6 +52,18 @@ except Exception:  # noqa: BLE001
     DataLoader = None  # type: ignore[assignment]
     TensorDataset = None  # type: ignore[assignment]
     TORCH_AVAILABLE = False
+
+
+DEEP_MODEL_NAMES = (
+    "lstm1d",
+    "gru1d",
+    "cnn1d",
+    "transformer",
+    "bilstm1d",
+    "bigru1d",
+    "cnn1d_deep",
+    "transformer_xl",
+)
 
 
 NON_FEATURE_COLUMNS = {
@@ -217,7 +236,7 @@ def _coerce_model_list(models_arg: list[str] | None) -> list[str]:
     picked = [m.strip().lower() for m in models_arg if m.strip()]
     unknown = [m for m in picked if m not in available]
     if unknown:
-        deep_names = {"lstm1d", "gru1d", "cnn1d", "transformer"}
+        deep_names = set(DEEP_MODEL_NAMES)
         missing_torch = sorted(set([m for m in unknown if m in deep_names]))
         if missing_torch and not TORCH_AVAILABLE:
             raise ValueError(
@@ -556,33 +575,39 @@ if TORCH_AVAILABLE:
             n_layers: int,
             dropout: float,
             rnn_type: str,
+            bidirectional: bool = False,
         ):
             super().__init__()
             rnn_dropout = float(dropout) if int(n_layers) > 1 else 0.0
+            hidden_dim_int = int(hidden_dim)
+            bidirectional_flag = bool(bidirectional)
             if rnn_type == "lstm":
                 self.rnn = nn.LSTM(
                     input_size=1,
-                    hidden_size=int(hidden_dim),
+                    hidden_size=hidden_dim_int,
                     num_layers=max(1, int(n_layers)),
                     batch_first=True,
                     dropout=rnn_dropout,
+                    bidirectional=bidirectional_flag,
                 )
             elif rnn_type == "gru":
                 self.rnn = nn.GRU(
                     input_size=1,
-                    hidden_size=int(hidden_dim),
+                    hidden_size=hidden_dim_int,
                     num_layers=max(1, int(n_layers)),
                     batch_first=True,
                     dropout=rnn_dropout,
+                    bidirectional=bidirectional_flag,
                 )
             else:
                 raise ValueError(f"Unknown rnn_type: {rnn_type}")
 
+            rnn_output_dim = hidden_dim_int * (2 if bidirectional_flag else 1)
             self.head = nn.Sequential(
-                nn.Linear(int(hidden_dim), int(hidden_dim)),
+                nn.Linear(rnn_output_dim, hidden_dim_int),
                 nn.ReLU(),
                 nn.Dropout(float(dropout)),
-                nn.Linear(int(hidden_dim), int(num_classes)),
+                nn.Linear(hidden_dim_int, int(num_classes)),
             )
 
         def forward(self, x: Any) -> Any:
@@ -604,6 +629,7 @@ if TORCH_AVAILABLE:
             dropout: float = 0.2,
             n_heads: int = 4,
             n_layers: int = 1,
+            bidirectional: bool = False,
             grad_clip: float = 1.0,
             random_state: int = 42,
             device: str = "cpu",
@@ -617,6 +643,7 @@ if TORCH_AVAILABLE:
             self.dropout = dropout
             self.n_heads = n_heads
             self.n_layers = n_layers
+            self.bidirectional = bidirectional
             self.grad_clip = grad_clip
             self.random_state = random_state
             self.device = device
@@ -652,7 +679,7 @@ if TORCH_AVAILABLE:
                     n_layers=max(1, int(self.n_layers)),
                     dropout=float(self.dropout),
                 )
-            if self.architecture == "lstm1d":
+            if self.architecture in {"lstm1d", "bilstm1d"}:
                 return _TabularRNNNet(
                     input_dim=input_dim,
                     num_classes=num_classes,
@@ -660,8 +687,9 @@ if TORCH_AVAILABLE:
                     n_layers=max(1, int(self.n_layers)),
                     dropout=float(self.dropout),
                     rnn_type="lstm",
+                    bidirectional=(self.architecture == "bilstm1d") or bool(self.bidirectional),
                 )
-            if self.architecture == "gru1d":
+            if self.architecture in {"gru1d", "bigru1d"}:
                 return _TabularRNNNet(
                     input_dim=input_dim,
                     num_classes=num_classes,
@@ -669,6 +697,7 @@ if TORCH_AVAILABLE:
                     n_layers=max(1, int(self.n_layers)),
                     dropout=float(self.dropout),
                     rnn_type="gru",
+                    bidirectional=(self.architecture == "bigru1d") or bool(self.bidirectional),
                 )
             raise ValueError(f"Unknown architecture: {self.architecture}")
 
@@ -750,11 +779,20 @@ if TORCH_AVAILABLE:
 def _available_model_names() -> list[str]:
     names = ["logreg", "knn", "svm", "gaussian_nb", "decision_tree", "mlp", "rf"]
     if TORCH_AVAILABLE:
-        names.extend(["lstm1d", "gru1d", "cnn1d", "transformer"])
+        names.extend(list(DEEP_MODEL_NAMES))
     return names
 
 
-def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
+def _resolve_torch_runtime_device(requested_device: str) -> str:
+    wanted = str(requested_device or "auto").strip().lower()
+    if wanted == "auto":
+        if TORCH_AVAILABLE and torch is not None and torch.cuda.is_available():
+            return "cuda"
+        return "cpu"
+    return wanted
+
+
+def _model_registry(random_state: int, torch_device: str) -> dict[str, dict[str, Any]]:
     registry: dict[str, dict[str, Any]] = {
         "logreg": {
             "label": "LogisticRegression",
@@ -839,7 +877,7 @@ def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
                 dropout=0.2,
                 n_layers=1,
                 random_state=random_state,
-                device="cpu",
+                device=torch_device,
             ),
             "grid": _product_grid(
                 {
@@ -847,6 +885,29 @@ def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
                     "n_layers": [1, 2],
                     "lr": [1e-3, 5e-4],
                     "dropout": [0.1, 0.2],
+                }
+            ),
+        }
+        registry["bilstm1d"] = {
+            "label": "Torch-BiLSTM1D",
+            "estimator": TorchTabularClassifier(
+                architecture="bilstm1d",
+                epochs=36,
+                batch_size=64,
+                lr=8e-4,
+                weight_decay=1e-4,
+                hidden_dim=128,
+                dropout=0.25,
+                n_layers=2,
+                random_state=random_state,
+                device=torch_device,
+            ),
+            "grid": _product_grid(
+                {
+                    "hidden_dim": [96, 128],
+                    "n_layers": [1, 2],
+                    "lr": [1e-3, 5e-4],
+                    "dropout": [0.2, 0.3],
                 }
             ),
         }
@@ -862,7 +923,7 @@ def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
                 dropout=0.2,
                 n_layers=1,
                 random_state=random_state,
-                device="cpu",
+                device=torch_device,
             ),
             "grid": _product_grid(
                 {
@@ -870,6 +931,29 @@ def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
                     "n_layers": [1, 2],
                     "lr": [1e-3, 5e-4],
                     "dropout": [0.1, 0.2],
+                }
+            ),
+        }
+        registry["bigru1d"] = {
+            "label": "Torch-BiGRU1D",
+            "estimator": TorchTabularClassifier(
+                architecture="bigru1d",
+                epochs=36,
+                batch_size=64,
+                lr=8e-4,
+                weight_decay=1e-4,
+                hidden_dim=128,
+                dropout=0.25,
+                n_layers=2,
+                random_state=random_state,
+                device=torch_device,
+            ),
+            "grid": _product_grid(
+                {
+                    "hidden_dim": [96, 128],
+                    "n_layers": [1, 2],
+                    "lr": [1e-3, 5e-4],
+                    "dropout": [0.2, 0.3],
                 }
             ),
         }
@@ -884,9 +968,31 @@ def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
                 hidden_dim=96,
                 dropout=0.2,
                 random_state=random_state,
-                device="cpu",
+                device=torch_device,
             ),
             "grid": _product_grid({"hidden_dim": [64, 96], "lr": [1e-3, 5e-4], "dropout": [0.1, 0.2]}),
+        }
+        registry["cnn1d_deep"] = {
+            "label": "Torch-CNN1D-Deep",
+            "estimator": TorchTabularClassifier(
+                architecture="cnn1d",
+                epochs=42,
+                batch_size=64,
+                lr=8e-4,
+                weight_decay=2e-4,
+                hidden_dim=128,
+                dropout=0.25,
+                random_state=random_state,
+                device=torch_device,
+            ),
+            "grid": _product_grid(
+                {
+                    "hidden_dim": [96, 128, 160],
+                    "lr": [1e-3, 5e-4],
+                    "dropout": [0.15, 0.25],
+                    "weight_decay": [1e-4, 5e-4],
+                }
+            ),
         }
         registry["transformer"] = {
             "label": "Torch-Transformer",
@@ -901,9 +1007,34 @@ def _model_registry(random_state: int) -> dict[str, dict[str, Any]]:
                 n_heads=4,
                 n_layers=1,
                 random_state=random_state,
-                device="cpu",
+                device=torch_device,
             ),
             "grid": _product_grid({"hidden_dim": [32, 64], "n_layers": [1, 2], "lr": [1e-3], "dropout": [0.1]}),
+        }
+        registry["transformer_xl"] = {
+            "label": "Torch-Transformer-XL",
+            "estimator": TorchTabularClassifier(
+                architecture="transformer",
+                epochs=42,
+                batch_size=64,
+                lr=7e-4,
+                weight_decay=2e-4,
+                hidden_dim=128,
+                dropout=0.15,
+                n_heads=8,
+                n_layers=2,
+                random_state=random_state,
+                device=torch_device,
+            ),
+            "grid": _product_grid(
+                {
+                    "hidden_dim": [96, 128],
+                    "n_heads": [4, 8],
+                    "n_layers": [2, 3],
+                    "lr": [1e-3, 5e-4],
+                    "dropout": [0.1, 0.2],
+                }
+            ),
         }
     return registry
 
@@ -1480,7 +1611,7 @@ def main() -> None:
         default=None,
         help=(
             "Models (default: all available): logreg knn svm gaussian_nb decision_tree mlp rf "
-            "[lstm1d gru1d cnn1d transformer if torch installed]."
+            "[lstm1d gru1d cnn1d transformer bilstm1d bigru1d cnn1d_deep transformer_xl if torch installed]."
         ),
     )
     parser.add_argument(
@@ -1548,6 +1679,11 @@ def main() -> None:
     parser.add_argument("--results-json", default=None, help="Output JSON path (default: reports/ml_results.json).")
     parser.add_argument("--summary-md", default=None, help="Output markdown path (default: reports/ml_summary.md).")
     parser.add_argument("--models-root", default=None, help="Model artifact root (default: analysis_pipeline/models).")
+    parser.add_argument(
+        "--torch-device",
+        default="auto",
+        help="Torch device for deep models: auto (default), cpu, cuda, cuda:0, etc.",
+    )
     args = parser.parse_args()
 
     if args.inner_folds < 2:
@@ -1560,6 +1696,12 @@ def main() -> None:
         raise ValueError("--clip-upper-quantile must be within (0,1].")
     if args.clip_lower_quantile >= args.clip_upper_quantile:
         raise ValueError("clip lower quantile must be less than clip upper quantile.")
+    args.torch_device = str(args.torch_device or "auto").strip() or "auto"
+    if not TORCH_AVAILABLE and args.torch_device.lower() != "auto":
+        raise ValueError("PyTorch is not installed, so --torch-device cannot be set.")
+    if TORCH_AVAILABLE and args.torch_device.lower().startswith("cuda"):
+        if torch is None or not torch.cuda.is_available():
+            raise ValueError(f"Requested torch device '{args.torch_device}' but CUDA is not available.")
 
     bids_root = _resolve_bids_root(args.bids_root)
     if not bids_root.exists():
@@ -1578,8 +1720,22 @@ def main() -> None:
     protocols = _coerce_protocol_list(args.protocols)
     models = _coerce_model_list(args.models)
     feature_selectors = _coerce_feature_selector_list(args.feature_selectors)
-    registry = _model_registry(random_state=args.random_seed)
+    torch_device_effective = _resolve_torch_runtime_device(args.torch_device)
+    registry = _model_registry(random_state=args.random_seed, torch_device=args.torch_device)
     selector_registry = _feature_selector_registry(random_state=args.random_seed)
+    stage_started = time.time()
+
+    print("Stage 6 starting.")
+    print(f"  Datasets: {', '.join(datasets)}")
+    print(f"  Protocols: {', '.join(protocols)}")
+    print(f"  Models: {', '.join(models)}")
+    print(f"  Feature selectors: {', '.join(feature_selectors)}")
+    print(f"  Torch available: {TORCH_AVAILABLE}")
+    if TORCH_AVAILABLE:
+        print(f"  Torch device requested: {args.torch_device}")
+        print(f"  Torch device effective: {torch_device_effective}")
+        if torch_device_effective.startswith("cuda") and torch is not None and torch.cuda.is_available():
+            print(f"  CUDA device name: {torch.cuda.get_device_name(0)}")
 
     results_json = Path(args.results_json).resolve() if args.results_json else _default_results_json()
     summary_md = Path(args.summary_md).resolve() if args.summary_md else _default_summary_md()
@@ -1589,10 +1745,12 @@ def main() -> None:
     run_tag = args.run_tag.strip() if args.run_tag else "default"
     run_dir = models_root / f"stage6_{run_stamp}_{run_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
+    print(f"  Run dir: {run_dir}")
 
     dataset_payloads: dict[str, dict[str, Any]] = {}
     dataset_stats: list[dict[str, Any]] = []
-    for dataset_name in datasets:
+    for dataset_idx, dataset_name in enumerate(datasets, start=1):
+        print(f"[Dataset {dataset_idx}/{len(datasets)}] Loading '{dataset_name}'...")
         dataset_path = _resolve_dataset_path(
             path_text=str(split_manifest["datasets"][dataset_name]["path"]),
             split_manifest_path=split_manifest_path,
@@ -1621,6 +1779,10 @@ def main() -> None:
                 "rows_after_class_mapping": payload["rows_after_class_mapping"],
             }
         )
+        print(
+            f"  Loaded '{dataset_name}': rows={payload['X'].shape[0]} "
+            f"features={payload['X'].shape[1]} participants={len(set(payload['participants'].tolist()))}"
+        )
 
     evaluations: list[dict[str, Any]] = []
 
@@ -1629,6 +1791,8 @@ def main() -> None:
         "group_holdout": split_manifest.get("strategies", {}).get("group_holdout", []),
     }
 
+    dataset_protocol_total = len(datasets) * len(protocols)
+    dataset_protocol_idx = 0
     for dataset_name in datasets:
         payload = dataset_payloads[dataset_name]
         X = payload["X"]
@@ -1637,12 +1801,18 @@ def main() -> None:
         participants = payload["participants"]
 
         for protocol in protocols:
+            dataset_protocol_idx += 1
+            print(
+                f"[Evaluation {dataset_protocol_idx}/{dataset_protocol_total}] "
+                f"dataset={dataset_name} protocol={protocol}"
+            )
             if protocol in ("loso", "group_holdout"):
                 split_plan = _sample_plan_items(
                     items=list(strategy_map.get(protocol, [])),
                     max_count=args.max_outer_splits_per_protocol,
                     seed=args.random_seed + len(dataset_name) + len(protocol),
                 )
+                print(f"  Planned outer splits: {len(split_plan)}")
 
                 for split_index, split_item in enumerate(split_plan, start=1):
                     train_participants = list(split_item.get("train_participants", []))
@@ -1660,6 +1830,12 @@ def main() -> None:
                     X_train = X[train_idx]
                     X_test = X[test_idx]
                     groups_train = groups[train_idx]
+                    split_name = str(split_item.get("split_id", f"{protocol}_{split_index:03d}"))
+                    print(
+                        f"    Split {split_index}/{len(split_plan)} ({split_name}): "
+                        f"train_rows={train_idx.size} test_rows={test_idx.size} "
+                        f"model_selectors={len(models)}x{len(feature_selectors)}"
+                    )
 
                     for model_key in models:
                         model_spec = registry[model_key]
@@ -1722,7 +1898,7 @@ def main() -> None:
                                     "feature_selector_label": selector_label,
                                     "pipeline_id": pipeline_id,
                                     "pipeline_label": f"{model_label} + {selector_label}",
-                                    "split_id": str(split_item.get("split_id", f"{protocol}_{split_index:03d}")),
+                                    "split_id": split_name,
                                     "n_train_rows": int(train_idx.size),
                                     "n_test_rows": int(test_idx.size),
                                     "n_train_participants": int(len(set(participants[train_idx].tolist()))),
@@ -1745,6 +1921,7 @@ def main() -> None:
                     max_count=args.max_outer_splits_per_protocol,
                     seed=args.random_seed + len(dataset_name) + 17,
                 )
+                print(f"  Candidate within-participant entries: {len(within_plan)}")
                 for within_item in within_plan:
                     participant_id = str(within_item.get("participant_id", ""))
                     if not participant_id:
@@ -1771,6 +1948,10 @@ def main() -> None:
                         n_splits=n_splits,
                         shuffle=True,
                         random_state=_stable_seed_from_text(participant_id, args.random_seed),
+                    )
+                    print(
+                        f"    Participant {participant_id}: folds={n_splits} "
+                        f"model_selectors={len(models)}x{len(feature_selectors)}"
                     )
                     for fold_idx, (inner_train_pos, inner_test_pos) in enumerate(
                         splitter.split(np.zeros(idx_all.size), y_participant),
@@ -1877,6 +2058,8 @@ def main() -> None:
         "available_models": _available_model_names(),
         "available_feature_selectors": _available_feature_selector_names(),
         "torch_available": TORCH_AVAILABLE,
+        "torch_device_requested": args.torch_device,
+        "torch_device_effective": torch_device_effective,
         "inner_folds": args.inner_folds,
         "max_param_combos": args.max_param_combos,
         "max_outer_splits_per_protocol": args.max_outer_splits_per_protocol,
@@ -1931,6 +2114,7 @@ def main() -> None:
     print(f"  Summary Markdown: {summary_md}")
     print(f"  Model run dir: {run_dir}")
     print(f"  Class scenario: {class_scenario['name']} ({len(labels)} classes)")
+    print(f"  Elapsed seconds: {time.time() - stage_started:.1f}")
     if warning_counts_total:
         print(f"  Captured warnings: {sum(warning_counts_total.values())}")
 

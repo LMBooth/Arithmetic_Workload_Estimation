@@ -47,10 +47,13 @@ stage6:
     clip_lower_quantile: 0.01
     clip_upper_quantile: 0.99
     random_seed: 42
+    torch_device: "auto"
   class_scenarios:
     - name: "all_bins"
     - name: "omit_easiest"
       drop_labels: ["0.6-1.5"]
+    - name: "omit_hardest"
+      drop_labels: ["6.0-6.9"]
     - name: "three_level_merged"
       merge_map:
         "0.6-1.5": "low"
@@ -67,3 +70,5 @@ stage6_confusions:
   args:
     metric: "balanced_accuracy_mean"
     top_k_per_protocol: 1
+    include_all: true
+    out_png_dir: "analysis_pipeline/reports/confusion_pngs"

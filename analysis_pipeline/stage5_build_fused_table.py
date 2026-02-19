@@ -804,6 +804,10 @@ def main() -> None:
     )
     if not difficulty_map:
         raise ValueError("Could not derive any difficulty bins from the trial table.")
+    print(
+        f"Stage 5 starting. task={task} modalities={','.join(selected_modalities)} "
+        f"trial_rows={len(trial_rows)} include_tutorial={bool(args.include_tutorial)}"
+    )
 
     subject_dropout_thresholds: dict[str, float] = {}
     if args.dropout_policy == "subject_percentile":
@@ -819,7 +823,8 @@ def main() -> None:
     unimodal_paths: dict[str, str] = {}
     unimodal_suffix = f"_{args.unimodal_tag.strip()}" if args.unimodal_tag and args.unimodal_tag.strip() else ""
 
-    for modality in selected_modalities:
+    for modality_idx, modality in enumerate(selected_modalities, start=1):
+        print(f"[Modality {modality_idx}/{len(selected_modalities)}] Building {modality} ML table")
         source_path = features_dir / MODALITY_TABLES[modality]
         source_rows = _read_tsv_rows(source_path)
         if subject_subset is not None:
@@ -864,6 +869,7 @@ def main() -> None:
         feature_columns_by_modality=feature_columns_by_modality,
         require_all_selected_modalities=args.require_all_selected_modalities,
     )
+    print(f"Built fused table rows: {len(fused_rows)}")
     _write_tsv(
         fused_out,
         fused_rows,
@@ -932,6 +938,12 @@ def main() -> None:
     }
     split_manifest_out.parent.mkdir(parents=True, exist_ok=True)
     split_manifest_out.write_text(json.dumps(split_manifest, indent=2) + "\n", encoding="utf-8")
+    print(
+        "Built split strategies: "
+        f"loso={len(split_manifest['strategies']['leave_one_participant_out'])}, "
+        f"group_holdout={len(split_manifest['strategies']['group_holdout'])}, "
+        f"within_participant={len(split_manifest['strategies']['within_participant'])}"
+    )
 
     trial_rows_considered = [
         meta

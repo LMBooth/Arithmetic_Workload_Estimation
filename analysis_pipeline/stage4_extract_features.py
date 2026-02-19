@@ -307,7 +307,11 @@ def _band_power(psd: np.ndarray, freqs: np.ndarray, fmin: float, fmax: float) ->
     mask = (freqs >= fmin) & (freqs < fmax)
     if not np.any(mask):
         return np.zeros(psd.shape[0], dtype=np.float64)
-    band = np.trapezoid(psd[:, mask], freqs[mask], axis=1)
+    # NumPy <2.0 does not expose np.trapezoid.
+    if hasattr(np, "trapezoid"):
+        band = np.trapezoid(psd[:, mask], freqs[mask], axis=1)
+    else:
+        band = np.trapz(psd[:, mask], freqs[mask], axis=1)
     return band.astype(np.float64, copy=False)
 
 
@@ -1037,9 +1041,14 @@ def main() -> None:
 
     subjects = sorted({row.get("participant_id", "") for row in filtered if row.get("participant_id")})
     preproc_version = _load_preproc_version(reports_dir)
+    print(
+        f"Stage 4 starting. task={task} subjects={len(subjects)} "
+        f"epoch_rows={len(filtered)}"
+    )
 
     baseline_cache: dict[str, SubjectBaseline] = {}
-    for subject in subjects:
+    for subject_idx, subject in enumerate(subjects, start=1):
+        print(f"[Baseline {subject_idx}/{len(subjects)}] {subject}")
         baseline_cache[subject] = _compute_subject_baseline(
             bids_root=bids_root,
             cleaned_root=cleaned_root,
@@ -1053,7 +1062,11 @@ def main() -> None:
     ecg_rows: list[dict[str, str]] = []
     pupil_rows: list[dict[str, str]] = []
 
-    for row in filtered:
+    total_rows = len(filtered)
+    progress_every = max(1, total_rows // 10)
+    for row_idx, row in enumerate(filtered, start=1):
+        if row_idx == 1 or row_idx == total_rows or row_idx % progress_every == 0:
+            print(f"[Epoch {row_idx}/{total_rows}] extracting features...")
         subject = row.get("participant_id", "")
         if not subject or subject not in baseline_cache:
             continue

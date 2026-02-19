@@ -41,3 +41,5 @@ stage6_confusions:
   args:
     metric: "balanced_accuracy_mean"
     top_k_per_protocol: 1
+    include_all: true
+    out_png_dir: "analysis_pipeline/reports/confusion_pngs"
