@@ -126,6 +126,15 @@ Get-ChildItem .\analysis_pipeline\reports\ml_results*.json | ForEach-Object {
 }
 ```
 
+Then rebuild aggregate report tables/plots used in writeups:
+
+```powershell
+python .\analysis_pipeline\stage6_build_report_assets.py `
+  --results-json-glob "analysis_pipeline/reports/ml_results_baseline*.json" `
+  --confusion-json-glob "analysis_pipeline/reports/confusion_highlights_baseline*.json" `
+  --out-dir analysis_pipeline/reports/report_assets_baseline_classic_and_advanced
+```
+
 Quick check that baseline inputs arrived:
 
 ```powershell

@@ -82,10 +82,13 @@ Get-ChildItem .\analysis_pipeline\reports\ml_results_baseline*.json | ForEach-Ob
 }
 ```
 
-Then regenerate documentation outputs (docx/md):
+Then regenerate documentation assets (tables/plots markdown + PNG):
 
 ```powershell
-python .\scripts\build_coherent_docx.py
+python .\analysis_pipeline\stage6_build_report_assets.py `
+  --results-json-glob "analysis_pipeline/reports/ml_results_baseline*.json" `
+  --confusion-json-glob "analysis_pipeline/reports/confusion_highlights_baseline*.json" `
+  --out-dir analysis_pipeline/reports/report_assets_baseline_classic_and_advanced
 ```
 
 ## Output Naming Convention
