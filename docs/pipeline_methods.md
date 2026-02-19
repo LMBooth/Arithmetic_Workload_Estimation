@@ -82,3 +82,14 @@ This allows fairer comparison of workload resolution across different label gran
 - Run via `run_pipeline.py` with pinned YAML config.
 - Save output manifests from `analysis_pipeline/reports/`.
 - Keep dataset and analysis repos separate for publication hygiene.
+
+## Exact Technical Reference
+
+For explicit implementation details (exact feature families, exact numeric feature columns used in the latest run, exact model/search spaces, and CV/tuning logic), see:
+
+- `docs/feature_ml_reference.md`
+- `docs/tables/ml_numeric_feature_columns_eeg.csv`
+- `docs/tables/ml_numeric_feature_columns_ecg.csv`
+- `docs/tables/ml_numeric_feature_columns_pupil.csv`
+- `docs/tables/ml_numeric_feature_columns_fused.csv`
+- `docs/tables/ml_numeric_feature_prefix_counts.csv`

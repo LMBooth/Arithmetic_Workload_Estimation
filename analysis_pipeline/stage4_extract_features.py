@@ -229,6 +229,27 @@ def _iqr(values: np.ndarray) -> float | None:
     return p75 - p25
 
 
+def _zero_crossing_count(signal_1d: np.ndarray) -> int | None:
+    x = signal_1d[np.isfinite(signal_1d)]
+    if x.size < 2:
+        return None
+    signs = np.sign(x)
+    nonzero = signs != 0
+    if int(np.sum(nonzero)) < 2:
+        return 0
+    nz = signs[nonzero]
+    return int(np.sum(nz[1:] * nz[:-1] < 0))
+
+
+def _slope_sign_changes_count(signal_1d: np.ndarray) -> int | None:
+    x = signal_1d[np.isfinite(signal_1d)]
+    if x.size < 3:
+        return None
+    left = x[1:-1] - x[:-2]
+    right = x[1:-1] - x[2:]
+    return int(np.sum((left * right) > 0))
+
+
 def _normalize_ch_name(name: str) -> str:
     text = name.strip().upper()
     alias = {
@@ -370,11 +391,38 @@ def _compute_eeg_roi_features(
         roi_data = data[idx, :]
         var_vals = np.var(roi_data, axis=1)
         rms_vals = np.sqrt(np.mean(roi_data**2, axis=1))
+        mav_vals = np.mean(np.abs(roi_data), axis=1)
+        mean_power_vals = np.mean(roi_data**2, axis=1)
+        median_power_vals = np.median(roi_data**2, axis=1)
         ll_vals = np.mean(np.abs(np.diff(roi_data, axis=1)), axis=1) if roi_data.shape[1] > 1 else np.array([])
+        zc_counts: list[int] = []
+        zc_rates: list[float] = []
+        ssc_counts: list[int] = []
+        ssc_rates: list[float] = []
+        for ch in roi_data:
+            zc = _zero_crossing_count(ch)
+            if zc is not None:
+                zc_counts.append(zc)
+                denom = max(ch.size - 1, 1)
+                zc_rates.append(float(zc) / float(denom))
+            ssc = _slope_sign_changes_count(ch)
+            if ssc is not None:
+                ssc_counts.append(ssc)
+                denom = max(ch.size - 2, 1)
+                ssc_rates.append(float(ssc) / float(denom))
         features[f"eeg_var_{roi}"] = float(np.mean(var_vals))
         features[f"eeg_rms_{roi}"] = float(np.mean(rms_vals))
+        features[f"eeg_mav_{roi}"] = float(np.mean(mav_vals))
+        features[f"eeg_mean_power_{roi}"] = float(np.mean(mean_power_vals))
+        features[f"eeg_median_power_{roi}"] = float(np.mean(median_power_vals))
         if ll_vals.size:
             features[f"eeg_line_length_{roi}"] = float(np.mean(ll_vals))
+        if zc_counts:
+            features[f"eeg_zero_crossings_{roi}"] = float(np.mean(zc_counts))
+            features[f"eeg_zero_crossings_rate_{roi}"] = float(np.mean(zc_rates))
+        if ssc_counts:
+            features[f"eeg_ssc_{roi}"] = float(np.mean(ssc_counts))
+            features[f"eeg_ssc_rate_{roi}"] = float(np.mean(ssc_rates))
 
         hj_activity: list[float] = []
         hj_mobility: list[float] = []
@@ -500,7 +548,13 @@ def _compute_ecg_peak_features(times: np.ndarray, peak_sig: np.ndarray) -> dict[
     p75 = np.percentile(rr_ms, 75.0)
     p25 = np.percentile(rr_ms, 25.0)
     out["ecg_rr_iqr_ms"] = float(p75 - p25)
-    out["ecg_pnn50_pct"] = float(100.0 * np.mean(np.abs(rr_diff_ms) > 50.0)) if rr_diff_ms.size else None
+    if rr_diff_ms.size:
+        nn50_count = int(np.sum(np.abs(rr_diff_ms) > 50.0))
+        out["ecg_nn50_count"] = nn50_count
+        out["ecg_pnn50_pct"] = float(100.0 * nn50_count / rr_diff_ms.size)
+    else:
+        out["ecg_nn50_count"] = None
+        out["ecg_pnn50_pct"] = None
     out["ecg_rr_cv"] = float(np.std(rr_ms) / np.mean(rr_ms)) if np.mean(rr_ms) > 0 else None
     out["ecg_quality_flag"] = "ok" if int(peaks.size) >= 3 else "insufficient_beats"
     return out
@@ -560,6 +614,10 @@ def _compute_pupil_features(
         early_ref = float(valid_pupil[0])
     peak = float(np.max(valid_pupil))
     out["pupil_peak_dilation"] = peak - early_ref
+    peak_idx = int(np.argmax(valid_pupil))
+    peak_time_s = float(rel_t[peak_idx])
+    out["pupil_peak_time_s"] = peak_time_s
+    out["pupil_tepr_latency_s"] = max(0.0, peak_time_s - early_window)
 
     dt = np.diff(valid_times)
     good_dt = dt > 0

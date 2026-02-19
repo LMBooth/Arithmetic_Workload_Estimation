@@ -1,0 +1,13 @@
+dataset,prefix,n_features
+eeg,eeg,141
+eeg,__TOTAL__,141
+ecg,ecg,16
+ecg,__TOTAL__,16
+pupil,gaze,5
+pupil,pupil,18
+pupil,__TOTAL__,23
+fused,ecg,16
+fused,eeg,141
+fused,gaze,5
+fused,pupil,18
+fused,__TOTAL__,180

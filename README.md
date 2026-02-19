@@ -92,6 +92,7 @@ python .\analysis_pipeline\run_pipeline.py `
 - Stage 6: split-aware ML benchmarking.
 
 See `docs/pipeline_methods.md` for explicit methodological details, including how fixed 6-second arithmetic windows are converted into epochs and optional sub-windows.
+For exact feature/model implementation details, see `docs/feature_ml_reference.md`.
 
 ## Notes for Manuscript Framing
 

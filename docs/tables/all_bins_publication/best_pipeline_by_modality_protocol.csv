@@ -1,0 +1,13 @@
+dataset,protocol,best_model,best_feature_selector,best_pipeline,balanced_accuracy_mean,macro_f1_mean,n_evaluations
+ecg,group_holdout,rf,none,rf+none,0.19472705748966257,0.1863238817172844,2
+ecg,loso,rf,none,rf+none,0.2013888888888889,0.1800978507344967,2
+ecg,within_participant,rf,none,rf+none,0.21428571428571427,0.1803061224489796,10
+eeg,group_holdout,knn,none,knn+none,0.19141156462585035,0.18228070317234651,2
+eeg,loso,mlp,none,mlp+none,0.24844104308390025,0.19771598857371098,2
+eeg,within_participant,mlp,none,mlp+none,0.3071428571428571,0.27741496598639453,10
+fused,group_holdout,rf,none,rf+none,0.2173469387755102,0.1907437023343089,2
+fused,loso,rf,none,rf+none,0.20634920634920634,0.1295416717411602,2
+fused,within_participant,logreg,none,logreg+none,0.3,0.2571428571428571,10
+pupil,group_holdout,decision_tree,none,decision_tree+none,0.2259637188208617,0.21537514005934835,2
+pupil,loso,decision_tree,none,decision_tree+none,0.2003968253968254,0.18244654676985503,2
+pupil,within_participant,rf,none,rf+none,0.35714285714285715,0.3001360544217687,10

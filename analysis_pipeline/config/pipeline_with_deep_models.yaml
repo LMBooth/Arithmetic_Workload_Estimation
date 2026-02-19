@@ -12,10 +12,16 @@ stages:
   stage1: false
   stage2: false
   stage3: false
-  stage4: false
-  stage5: false
+  stage4: true
+  stage5: true
   stage6: true
   stage6_confusions: true
+
+stage_args:
+  stage4: {}
+  stage5:
+    dropout_policy: "absolute"
+    dropout_threshold: 35.0
 
 stage6:
   run_tag_prefix: "deep_models"
@@ -33,6 +39,17 @@ stage6:
     random_seed: 42
   class_scenarios:
     - name: "all_bins"
+    - name: "omit_easiest"
+      drop_labels: ["0.6-1.5"]
+    - name: "three_level_merged"
+      merge_map:
+        "0.6-1.5": "low"
+        "1.5-2.4": "low"
+        "2.4-3.3": "mid"
+        "3.3-4.2": "mid"
+        "4.2-5.1": "high"
+        "5.1-6.0": "high"
+        "6.0-6.9": "high"
 
 stage6_confusions:
   out_json_template: "analysis_pipeline/reports/confusion_highlights_{scenario}_deep_models.json"
