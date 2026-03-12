@@ -1,6 +1,6 @@
 # Analysis Pipeline Package
 
-This directory contains the executable stages, config profiles, and supporting modules that drive the end-to-end workload analysis workflow.
+This directory contains the executable stages, config profiles, and supporting modules that drive the end-to-end workload analysis workflow for the OpenNeuro `ds007262` `v1.0.6` arithmetic study snapshot.
 
 ## Canonical entry points
 

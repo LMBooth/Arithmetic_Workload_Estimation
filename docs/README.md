@@ -3,7 +3,7 @@
 ## GitHub-facing documentation
 
 - `../README.md`
-  Repository overview, quick start, checked-in profiles, and high-level pipeline summary.
+  Repository overview, quick start, checked-in profiles, and high-level pipeline summary for OpenNeuro `ds007262` `v1.0.6`.
 - `pipeline_reference.md`
   Stage-by-stage reference for the executable pipeline, config structure, and common run patterns.
 - `reproducibility.md`

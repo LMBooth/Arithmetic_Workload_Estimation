@@ -1,6 +1,6 @@
 # Physiological Workload ML Pipeline
 
-Standalone repository for reproducing the multimodal cognitive-workload pipeline used on the BIDS arithmetic dataset. The codebase covers dataset acquisition, trial-table construction, QC, preprocessing, epoching, unimodal feature extraction, fused-table assembly, split-aware machine learning, confusion analysis, and publication-oriented reporting.
+Analysis repository for the OpenNeuro study [`ds007262` version `1.0.6`](https://openneuro.org/datasets/ds007262/versions/1.0.6), titled `Cognitive Workload 8-level arithmetic` (DOI `10.18112/openneuro.ds007262.v1.0.6`). The codebase covers dataset acquisition, trial-table construction, QC, preprocessing, epoching, unimodal feature extraction, fused-table assembly, split-aware machine learning, confusion analysis, and publication-oriented reporting for this specific study snapshot.
 
 ## Repository layout
 
@@ -11,7 +11,7 @@ Standalone repository for reproducing the multimodal cognitive-workload pipeline
 - `data/`: local BIDS dataset root (ignored).
 - `analysis_pipeline/runs/`: run-specific outputs (ignored).
 
-This repository is intentionally separate from any BIDS descriptor or data-publication repository. Track code, configs, and documentation here; keep raw data and generated outputs local.
+This repository is intentionally separate from the OpenNeuro dataset record itself. Track code, configs, and documentation here; keep raw data and generated outputs local.
 
 ## Quick start
 
@@ -28,11 +28,12 @@ python -m pip install -r requirements.txt
 
 ### 2. Acquire the BIDS dataset
 
-OpenNeuro dataset ID:
+OpenNeuro dataset snapshot for this repository:
 
 ```powershell
 python .\scripts\download_bids.py `
-  --dataset-id dsXXXXXX `
+  --dataset-id ds007262 `
+  --snapshot 1.0.6 `
   --target .\data\bids_arithmetic
 ```
 
@@ -44,10 +45,10 @@ python .\scripts\download_bids.py `
   --target .\data\bids_arithmetic
 ```
 
-One-command download plus pipeline execution:
+One-command download plus pipeline execution for `ds007262` `v1.0.6`:
 
 ```powershell
-.\scripts\run_end_to_end.ps1 -DatasetId dsXXXXXX -ForceDownload
+.\scripts\run_end_to_end.ps1 -DatasetId ds007262 -Snapshot 1.0.6 -ForceDownload
 ```
 
 ### 3. Run a checked-in profile
@@ -66,7 +67,7 @@ python .\analysis_pipeline\run_pipeline.py `
   --config .\analysis_pipeline\config\pipeline_unified_classic_nn_baseline_overlap3s_50pct_preproc.yaml
 ```
 
-The checked-in profiles write under `analysis_pipeline/runs/<profile_name>/`. Both set `outputs.clean_start: true`, so rerunning the same profile replaces that profile's run directory only. If you want to preserve an existing run, copy the YAML and change `outputs.root` or set `clean_start: false`.
+The checked-in profiles assume a local copy of OpenNeuro `ds007262` `v1.0.6` under `data/bids_arithmetic`. They write under `analysis_pipeline/runs/<profile_name>/`. Both set `outputs.clean_start: true`, so rerunning the same profile replaces that profile's run directory only. If you want to preserve an existing run, copy the YAML and change `outputs.root` or set `clean_start: false`.
 
 ### 4. Run stage subsets
 

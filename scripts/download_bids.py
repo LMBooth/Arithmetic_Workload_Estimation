@@ -121,7 +121,7 @@ def _download_from_archive(url: str, target: Path) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Download a BIDS dataset to a local folder.")
     source = parser.add_mutually_exclusive_group(required=True)
-    source.add_argument("--dataset-id", help="OpenNeuro dataset ID (example: ds003XXX).")
+    source.add_argument("--dataset-id", help="OpenNeuro dataset ID (example: ds007262).")
     source.add_argument("--archive-url", help="Direct URL to a BIDS archive (.zip/.tar/.tar.gz/.tgz).")
     parser.add_argument("--snapshot", default=None, help="Optional OpenNeuro snapshot tag/version.")
     parser.add_argument(
@@ -132,7 +132,7 @@ def main() -> None:
     parser.add_argument(
         "--target",
         default="data/bids_arithmetic",
-        help="Local destination folder for the BIDS dataset (default: data/bids_arithmetic).",
+        help="Local destination folder for the BIDS dataset (default: data/bids_arithmetic for ds007262 v1.0.6).",
     )
     parser.add_argument("--force", action="store_true", help="Replace target folder if it already exists.")
     args = parser.parse_args()

@@ -1,6 +1,6 @@
 # Reproducibility and Artifact Policy
 
-This repository is intended to keep the pipeline implementation, configs, and human-written documentation under version control while keeping raw data and generated outputs local.
+This repository is intended to keep the pipeline implementation, configs, and human-written documentation under version control while keeping raw data and generated outputs local for the OpenNeuro `ds007262` `v1.0.6` study snapshot.
 
 ## What belongs in git
 
@@ -34,10 +34,19 @@ Both configs set `outputs.clean_start: true`. Rerunning either profile replaces 
 ## Recommended local workflow
 
 1. Create the Python environment and install `requirements.txt`.
-2. Download or place the BIDS dataset under `data/bids_arithmetic`.
+2. Download or place OpenNeuro `ds007262` `v1.0.6` under `data/bids_arithmetic`.
 3. Run one of the checked-in profiles through `analysis_pipeline/run_pipeline.py`.
 4. If Stage 0 to 5 outputs are already available, rerun only `stage6` or `stage6_confusions` as needed.
 5. Build manuscript-facing assets only after the underlying `ml_results*.json` inputs are present locally.
+
+Recommended download command:
+
+```powershell
+python .\scripts\download_bids.py `
+  --dataset-id ds007262 `
+  --snapshot 1.0.6 `
+  --target .\data\bids_arithmetic
+```
 
 ## Linux to Windows handoff for baseline outputs
 

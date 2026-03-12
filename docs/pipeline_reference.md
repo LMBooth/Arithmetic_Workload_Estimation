@@ -1,6 +1,6 @@
 # Pipeline Reference
 
-This document explains how the checked-in pipeline profiles map to the executable code, runtime behavior, and output structure.
+This document explains how the checked-in pipeline profiles map to the executable code, runtime behavior, and output structure for the OpenNeuro `ds007262` `v1.0.6` dataset snapshot.
 
 ## Canonical entry points
 
@@ -32,7 +32,7 @@ Important runtime behavior:
 
 Common settings across both profiles:
 
-- BIDS root: `./data/bids_arithmetic`
+- BIDS root: `./data/bids_arithmetic` containing OpenNeuro `ds007262` `v1.0.6`
 - Stage 1 strict QC enabled
 - Stage 2 EEG preprocessing uses a Butterworth pipeline with `eeg_l_freq=2.0` and `eeg_h_freq=40.0`
 - Stage 5 builds `features_fused_tutorial_baseline.tsv` and `split_manifest_tutorial_baseline.json`
@@ -244,6 +244,15 @@ Full run with the default profile:
 ```powershell
 python .\analysis_pipeline\run_pipeline.py `
   --config .\analysis_pipeline\config\pipeline_unified_classic_nn_baseline_preproc.yaml
+```
+
+Download the study snapshot expected by the checked-in profiles:
+
+```powershell
+python .\scripts\download_bids.py `
+  --dataset-id ds007262 `
+  --snapshot 1.0.6 `
+  --target .\data\bids_arithmetic
 ```
 
 Dry run:

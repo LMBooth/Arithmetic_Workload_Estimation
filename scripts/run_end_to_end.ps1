@@ -1,6 +1,7 @@
 param(
     [string]$DatasetId = "",
     [string]$ArchiveUrl = "",
+    [string]$Snapshot = "1.0.6",
     [string]$Target = "data/bids_arithmetic",
     [string]$Config = "analysis_pipeline/config/pipeline_unified_classic_nn_baseline_preproc.yaml",
     [switch]$ForceDownload
@@ -18,6 +19,9 @@ if ($ForceDownload) {
 }
 if (-not [string]::IsNullOrWhiteSpace($DatasetId)) {
     $downloadArgs += @("--dataset-id", $DatasetId)
+    if (-not [string]::IsNullOrWhiteSpace($Snapshot)) {
+        $downloadArgs += @("--snapshot", $Snapshot)
+    }
 } else {
     $downloadArgs += @("--archive-url", $ArchiveUrl)
 }
