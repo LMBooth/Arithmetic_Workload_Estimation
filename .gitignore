@@ -37,3 +37,18 @@ analysis_pipeline/reports/**
 docs/*.docx
 docs/*.zip
 docs/figure_transfer_*/
+docs/tables/
+docs/archive/
+docs/paper_handoff/
+analysis_pipeline/archive/
+
+# Local paper/manuscript helpers not part of the public pipeline surface
+analysis_pipeline/stage6_recover_confusions_from_md.py
+scripts/build_baseline_confusion_publication_docs.py
+scripts/build_baseline_results_deep_dive_docs.py
+scripts/build_coherent_docx.py
+scripts/build_feature_type_catalog.py
+scripts/build_final_manuscript_docx.py
+scripts/enrich_feature_column_tables.py
+scripts/generate_pipeline_comparison_figures.py
+scripts/update_pipeline_docx_results.py
