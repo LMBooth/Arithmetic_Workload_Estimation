@@ -1,24 +1,21 @@
-﻿# Physiological Workload ML Pipeline (Standalone)
+# Physiological Workload ML Pipeline
 
-This repository is intentionally separated from the BIDS data-descriptor repository.
+Standalone repository for reproducing the multimodal cognitive-workload pipeline used on the BIDS arithmetic dataset. The codebase covers dataset acquisition, trial-table construction, QC, preprocessing, epoching, unimodal feature extraction, fused-table assembly, split-aware machine learning, confusion analysis, and publication-oriented reporting.
 
-It contains only the code and documentation needed to:
-1. Download a BIDS dataset snapshot.
-2. Build trial tables and extract multimodal physiological features.
-3. Train and evaluate machine-learning models for cognitive workload (task difficulty) resolution.
+## Repository layout
 
-## Repository Scope
+- `analysis_pipeline/`: executable stage scripts, pipeline configs, and supporting modules.
+- `analysis_pipeline/config/`: checked-in YAML profiles for reproducible runs.
+- `scripts/`: dataset download, end-to-end execution, and report/manuscript helpers.
+- `docs/`: GitHub-facing documentation plus manuscript handoff material.
+- `data/`: local BIDS dataset root (ignored).
+- `analysis_pipeline/runs/`: run-specific outputs (ignored).
 
-- `analysis_pipeline/`: staged processing scripts (trial table -> QC -> preprocessing -> epoching -> features -> ML).
-- `analysis_pipeline/config/`: YAML configs for full runs and class-variant runs.
-- `scripts/download_bids.py`: automatic BIDS download helper (OpenNeuro CLI or archive URL).
-- `docs/`: explicit methods notes for journal write-up.
+This repository is intentionally separate from any BIDS descriptor or data-publication repository. Track code, configs, and documentation here; keep raw data and generated outputs local.
 
-This repo should not be used to publish final BIDS data artifacts. Keep those in your separate data-descriptor repository.
+## Quick start
 
-## Quick Start
-
-### 1) Environment
+### 1. Create the environment
 
 ```powershell
 python -m venv .venv
@@ -27,9 +24,11 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-### 2) Download BIDS Dataset (automatic)
+`requirements.txt` covers the classic ML and signal-processing stack. Install PyTorch separately if you plan to run deep Stage 6 models such as `lstm1d`, `gru1d`, `cnn1d`, or `transformer`.
 
-Option A: OpenNeuro dataset ID
+### 2. Acquire the BIDS dataset
+
+OpenNeuro dataset ID:
 
 ```powershell
 python .\scripts\download_bids.py `
@@ -37,7 +36,7 @@ python .\scripts\download_bids.py `
   --target .\data\bids_arithmetic
 ```
 
-Option B: Direct archive URL (`.zip`, `.tar`, `.tar.gz`, `.tgz`)
+Direct archive URL:
 
 ```powershell
 python .\scripts\download_bids.py `
@@ -45,130 +44,89 @@ python .\scripts\download_bids.py `
   --target .\data\bids_arithmetic
 ```
 
-One-command end-to-end example:
+One-command download plus pipeline execution:
 
 ```powershell
 .\scripts\run_end_to_end.ps1 -DatasetId dsXXXXXX -ForceDownload
 ```
 
-### 3) Run Full Pipeline
+### 3. Run a checked-in profile
 
-```powershell
-python .\analysis_pipeline\run_pipeline.py --config .\analysis_pipeline\config\pipeline.yaml
-```
-
-By default this runs Stage 0->6 and writes outputs under:
-- `analysis_pipeline/derivatives/`
-- `analysis_pipeline/features/`
-- `analysis_pipeline/models/`
-- `analysis_pipeline/reports/`
-
-### 4) Stage-Focused Commands (feature extraction + ML)
-
-If you want to run up to feature extraction first:
+Default fixed-window profile:
 
 ```powershell
 python .\analysis_pipeline\run_pipeline.py `
-  --config .\analysis_pipeline\config\pipeline.yaml `
+  --config .\analysis_pipeline\config\pipeline_unified_classic_nn_baseline_preproc.yaml
+```
+
+Alternative overlap profile:
+
+```powershell
+python .\analysis_pipeline\run_pipeline.py `
+  --config .\analysis_pipeline\config\pipeline_unified_classic_nn_baseline_overlap3s_50pct_preproc.yaml
+```
+
+The checked-in profiles write under `analysis_pipeline/runs/<profile_name>/`. Both set `outputs.clean_start: true`, so rerunning the same profile replaces that profile's run directory only. If you want to preserve an existing run, copy the YAML and change `outputs.root` or set `clean_start: false`.
+
+### 4. Run stage subsets
+
+Run through feature extraction:
+
+```powershell
+python .\analysis_pipeline\run_pipeline.py `
+  --config .\analysis_pipeline\config\pipeline_unified_classic_nn_baseline_preproc.yaml `
   --only stage0 stage1 stage2 stage3 stage4 stage5
 ```
 
-Then run ML only:
+Run Stage 6 only:
 
 ```powershell
 python .\analysis_pipeline\run_pipeline.py `
-  --config .\analysis_pipeline\config\pipeline.yaml `
-  --only stage6 stage6_confusions
+  --config .\analysis_pipeline\config\pipeline_unified_classic_nn_baseline_preproc.yaml `
+  --only stage6
 ```
 
-## Linux -> Windows Handoff (Baseline Reports)
+When `--only stage6` is used through the orchestrator, `stage6_confusions` is auto-run unless `--no-auto-stage6-confusions` is passed.
 
-`git pull` alone is not enough to reproduce baseline report assets on Windows. Large ML/report artifacts are intentionally ignored in `.gitignore`:
+## Pipeline summary
 
-- `analysis_pipeline/reports/ml_results*.json`
-- `analysis_pipeline/reports/confusion_highlights*.json`
-- `analysis_pipeline/reports/confusion_pngs/`
-- `analysis_pipeline/features/` (entire folder)
+| Stage | Script | Main purpose | Main outputs |
+| --- | --- | --- | --- |
+| 0 | `build_trial_table.py` | Build the canonical trial table from BIDS events. | `<run_root>/reports/trial_table_bids_arithmetic.tsv` |
+| 1 | `stage1_qc_summary.py` | Summarize modality coverage, dropped samples, and participant QC. | `<run_root>/reports/qc_dataset_summary.json`, figures, subject table |
+| 2 | `stage2_preprocess.py` | Clean EEG, ECG, and pupil streams and write derivatives. | `<run_root>/derivatives/cleaned/`, preprocess logs |
+| 3 | `stage3_epoch_trials.py` | Convert trials into fixed or overlapping epochs with drop accounting. | `<run_root>/derivatives/epochs/`, `epoch_manifest.tsv`, `epoch_summary.json` |
+| 4 | `stage4_extract_features.py` | Extract modality-specific engineered features. | `<run_root>/features/features_eeg.tsv`, `features_ecg.tsv`, `features_pupil.tsv` |
+| 5 | `stage5_build_fused_table.py` | Build unimodal and fused ML tables plus split manifests. | `<run_root>/features/features_fused_tutorial_baseline.tsv`, `split_manifest_tutorial_baseline.json` |
+| 6 | `stage6_train_classic_ml.py` | Benchmark classic and optional deep models across datasets, protocols, and class scenarios. | `<run_root>/reports/ml_results_*.json`, `<run_root>/reports/ml_summary_*.md`, `<run_root>/models/` |
+| 6b | `stage6_highlight_confusions.py` | Curate top confusion matrices from Stage 6 results. | `<run_root>/reports/confusion_highlights_*.json`, markdown, PNGs |
+| 6c | `stage6_build_publication_report.py` | Assemble a publication-facing run summary. | `<run_root>/reports/publication_full_report.md`, `.json` |
 
-If the Linux machine already produced the baseline runs, copy these files from Linux into the same paths on Windows.
+Stage 6 can also emit live confusion PNGs during training and EEG PSD/topomap QC figures when EEG is part of the selected dataset list.
 
-Required files to rebuild all baseline confusion reports on Windows:
+## Checked-in profiles
 
-- `analysis_pipeline/reports/ml_results_baseline_*_baseline.json` (classic baseline track, 5 files)
-- `analysis_pipeline/reports/ml_results_baseline_*_baseline_advanced_nn.json` (advanced NN baseline track, 5 files)
+| Profile | File | Intended use |
+| --- | --- | --- |
+| Baseline fixed-window run | `analysis_pipeline/config/pipeline_unified_classic_nn_baseline_preproc.yaml` | Canonical reproducible run: fixed 6 s calculation windows, classic plus deep model sweep, publication report enabled. |
+| Overlap-window run | `analysis_pipeline/config/pipeline_unified_classic_nn_baseline_overlap3s_50pct_preproc.yaml` | Same pipeline family with 3 s windows, 1.5 s step size, and overlap enabled for Stage 3. |
 
-Expected scenarios in those filenames:
+Both profiles benchmark the `baseline_all_bins`, `baseline_omit_easiest`, `baseline_omit_hardest`, `baseline_low_high_omit_hardest`, and `baseline_grouped_4class_omit_hardest` class scenarios.
 
-- `baseline_all_bins`
-- `baseline_omit_hardest`
-- `baseline_low_high_omit_hardest`
-- `baseline_grouped_4class_omit_hardest`
-- `baseline_omit_easiest`
+## Reproducibility notes
 
-If you need to rerun baseline ML on Windows (not only regenerate confusion reports), also copy:
+- `run_pipeline.py` expands output placeholders such as `{reports_dir}`, `{features_dir}`, and `{models_dir}` from `outputs.root`.
+- Expected outputs are verified after every step. Use `--no-strict-outputs` only when debugging incomplete runs.
+- Stage 1 strict QC carry-forward is propagated automatically into Stages 2 to 5.
+- `--dry-run` prints planned commands and expected outputs without executing them.
+- Stage 6 resolves both Windows and WSL-style dataset paths stored in split manifests.
 
-- `analysis_pipeline/features/` (all feature tables/manifests referenced by Stage 6)
-- especially `analysis_pipeline/features/split_manifest_tutorial_baseline.json`
+## Documentation map
 
-Rebuild confusion reports for all available `ml_results*.json` files (includes baseline + advanced if present):
-
-```powershell
-Get-ChildItem .\analysis_pipeline\reports\ml_results*.json | ForEach-Object {
-  $scenario = $_.BaseName -replace '^ml_results_', ''
-  python .\analysis_pipeline\stage6_highlight_confusions.py `
-    --results-json $_.FullName `
-    --out-json ("analysis_pipeline/reports/confusion_highlights_{0}.json" -f $scenario) `
-    --out-md ("analysis_pipeline/reports/confusion_highlights_{0}.md" -f $scenario) `
-    --metric balanced_accuracy_mean `
-    --top-k-per-protocol 1 `
-    --include-all `
-    --out-png-dir analysis_pipeline/reports/confusion_pngs
-}
-```
-
-Then rebuild aggregate report tables/plots used in writeups:
-
-```powershell
-python .\analysis_pipeline\stage6_build_report_assets.py `
-  --results-json-glob "analysis_pipeline/reports/ml_results_baseline*.json" `
-  --confusion-json-glob "analysis_pipeline/reports/confusion_highlights_baseline*.json" `
-  --out-dir analysis_pipeline/reports/report_assets_baseline_classic_and_advanced
-```
-
-Quick check that baseline inputs arrived:
-
-```powershell
-Get-ChildItem .\analysis_pipeline\reports\ml_results_baseline_*_baseline.json | Measure-Object
-Get-ChildItem .\analysis_pipeline\reports\ml_results_baseline_*_baseline_advanced_nn.json | Measure-Object
-```
-
-Each command should report `Count = 5`.
-
-## Stage Summary
-
-- Stage 0: canonical trial table from BIDS events.
-- Stage 1: QC summary.
-- Stage 2: preprocessing (EEG/ECG/pupil).
-- Stage 3: epoching from trial windows.
-- Stage 4: feature extraction (unimodal).
-- Stage 5: fused ML table + split manifest.
-- Stage 6: split-aware ML benchmarking.
-
-See `docs/pipeline_methods.md` for explicit methodological details, including how fixed 6-second arithmetic windows are converted into epochs and optional sub-windows.
-For exact feature/model implementation details, see `docs/feature_ml_reference.md`.
-
-## Notes for Manuscript Framing
-
-This codebase is designed for ML-psychology style reporting of physiological workload resolution:
-- modality-wise benchmarking (EEG, ECG, pupil, fused),
-- protocol-wise benchmarking (LOSO, group_holdout, within_participant),
-- class-resolution comparisons (binary/4/7/8 classes).
-
-For deep models (`lstm1d`, `gru1d`, `cnn1d`, `transformer`), install PyTorch and run:
-
-```powershell
-python .\analysis_pipeline\run_pipeline.py --config .\analysis_pipeline\config\pipeline_with_deep_models.yaml
-```
+- `docs/pipeline_reference.md`: explicit stage-by-stage and config-by-config pipeline reference.
+- `docs/reproducibility.md`: artifact policy, rerun guidance, and Linux-to-Windows handoff instructions.
+- `analysis_pipeline/README.md`: package-level map of stage scripts and outputs.
+- local manuscript handoff material can live under `docs/paper_handoff/` without changing the reproducible pipeline entry points.
 
 ## License
 

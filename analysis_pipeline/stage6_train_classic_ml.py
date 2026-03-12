@@ -9,6 +9,7 @@ import json
 import math
 import os
 import random
+import subprocess
 import time
 import warnings
 from collections import Counter, defaultdict
@@ -17,8 +18,10 @@ from pathlib import Path
 from statistics import mean, pstdev
 from typing import Any
 
+import matplotlib
 import numpy as np
 import pandas as pd
+from eeg_condition_psd import build_condition_psd_report
 from sklearn.base import BaseEstimator, TransformerMixin, clone
 from sklearn.ensemble import ExtraTreesClassifier, RandomForestClassifier
 from sklearn.exceptions import ConvergenceWarning
@@ -26,7 +29,7 @@ from sklearn.feature_selection import SelectFromModel, SelectPercentile, Varianc
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score
-from sklearn.model_selection import GroupKFold, StratifiedKFold
+from sklearn.model_selection import GroupKFold, StratifiedKFold, StratifiedShuffleSplit
 from sklearn.naive_bayes import GaussianNB
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.neural_network import MLPClassifier
@@ -34,6 +37,9 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import RobustScaler
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
 
 # Avoid torch dynamo/onnx import-time dependency issues in this pipeline runtime.
 os.environ.setdefault("TORCH_DISABLE_DYNAMO", "1")
@@ -133,6 +139,20 @@ def _default_summary_md() -> Path:
     return _reports_dir() / "ml_summary.md"
 
 
+def _default_live_confusion_png_dir() -> Path:
+    return _reports_dir() / "confusion_pngs_live"
+
+
+def _default_eeg_condition_psd_dir() -> Path:
+    return _reports_dir() / "eeg_condition_psd"
+
+
+def _slug(text: str) -> str:
+    out = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(text).strip())
+    out = "_".join(part for part in out.split("_") if part)
+    return out or "default"
+
+
 def _resolve_bids_root(bids_root_arg: str) -> Path:
     direct = Path(bids_root_arg).expanduser()
     if direct.is_absolute():
@@ -146,10 +166,39 @@ def _resolve_bids_root(bids_root_arg: str) -> Path:
     return (repo_root / direct).resolve()
 
 
+def _translate_wsl_path(path_text: str) -> Path | None:
+    normalized = str(path_text).strip().replace("\\", "/")
+    if not normalized.startswith("/mnt/") or len(normalized) < 8:
+        return None
+    drive = normalized[5]
+    if not drive.isalpha() or normalized[6] != "/":
+        return None
+    remainder = normalized[7:]
+    return Path(f"{drive.upper()}:/{remainder}")
+
+
+def _translate_windows_drive_path(path_text: str) -> Path | None:
+    normalized = str(path_text).strip().replace("\\", "/")
+    if len(normalized) < 4 or normalized[1] != ":" or normalized[2] != "/":
+        return None
+    drive = normalized[0]
+    if not drive.isalpha():
+        return None
+    remainder = normalized[3:]
+    return Path(f"/mnt/{drive.lower()}/{remainder}")
+
+
 def _resolve_dataset_path(path_text: str, split_manifest_path: Path) -> Path:
     direct = Path(path_text).expanduser()
-    if direct.is_absolute():
+    if direct.is_absolute() and direct.exists():
         return direct.resolve()
+
+    translated_wsl = _translate_wsl_path(path_text)
+    if translated_wsl is not None and translated_wsl.exists():
+        return translated_wsl.resolve()
+    translated_windows = _translate_windows_drive_path(path_text)
+    if translated_windows is not None and translated_windows.exists():
+        return translated_windows.resolve()
 
     from_manifest = (split_manifest_path.parent / direct).resolve()
     if from_manifest.exists():
@@ -160,7 +209,15 @@ def _resolve_dataset_path(path_text: str, split_manifest_path: Path) -> Path:
         return from_cwd
 
     repo_root = Path(__file__).resolve().parent.parent
-    return (repo_root / direct).resolve()
+    repo_candidate = (repo_root / direct).resolve()
+    if repo_candidate.exists():
+        return repo_candidate
+
+    if direct.is_absolute():
+        return direct.resolve()
+    if translated_wsl is not None:
+        return translated_wsl.resolve()
+    return repo_candidate
 
 
 def _stable_seed_from_text(text: str, base_seed: int) -> int:
@@ -264,7 +321,14 @@ def _coerce_feature_selector_list(selectors_arg: list[str] | None) -> list[str]:
 
 
 def _coerce_protocol_list(protocols_arg: list[str] | None) -> list[str]:
-    available = ["loso", "group_holdout", "within_participant"]
+    available = [
+        "loso",
+        "group_holdout",
+        "within_participant",
+        "pooled_stratified",
+        "pooled_stratified_holdout",
+        "pooled_stratified_one_fold",
+    ]
     if not protocols_arg:
         return available
     picked = [p.strip().lower() for p in protocols_arg if p.strip()]
@@ -316,7 +380,7 @@ def _label_sort_key(label: str, fallback_order: dict[str, int]) -> tuple[float, 
     return 9000.0, fallback_order.get(text, 10_000)
 
 
-def _reorder_labels_baseline_after_easiest(labels: list[str], baseline_label: str | None) -> list[str]:
+def _reorder_labels_baseline_first(labels: list[str], baseline_label: str | None) -> list[str]:
     if not labels:
         return labels
     baseline_targets = []
@@ -331,13 +395,7 @@ def _reorder_labels_baseline_after_easiest(labels: list[str], baseline_label: st
         return labels
     baseline = baseline_in_labels[0]
     non_baseline = [label for label in labels if label != baseline]
-    if not non_baseline:
-        return labels
-    fallback = {label: idx for idx, label in enumerate(non_baseline)}
-    easiest = min(non_baseline, key=lambda x: _label_sort_key(x, fallback))
-    insert_idx = non_baseline.index(easiest) + 1
-    reordered = non_baseline[:insert_idx] + [baseline] + non_baseline[insert_idx:]
-    return reordered
+    return [baseline] + non_baseline
 
 
 def _coerce_label_list(values: list[str] | None) -> list[str]:
@@ -350,6 +408,29 @@ def _coerce_label_list(values: list[str] | None) -> list[str]:
             continue
         out.append(text)
     return list(dict.fromkeys(out))
+
+
+def _ordered_counts(values: list[str], preferred_order: list[str] | None = None) -> dict[str, int]:
+    counts = Counter(str(v) for v in values if str(v).strip())
+    out: dict[str, int] = {}
+
+    if preferred_order:
+        for label in preferred_order:
+            key = str(label).strip()
+            if key in counts:
+                out[key] = int(counts.pop(key))
+
+    # Preserve first-seen order for any remaining labels.
+    for value in values:
+        key = str(value).strip()
+        if key in counts and key not in out:
+            out[key] = int(counts.pop(key))
+
+    # Deterministic fallback if anything remains.
+    for key in sorted(counts.keys()):
+        out[key] = int(counts[key])
+
+    return out
 
 
 def _parse_merge_entry(text: str) -> tuple[str, str]:
@@ -400,7 +481,8 @@ def _build_class_scenario(split_manifest: dict[str, Any], args: argparse.Namespa
     ]
     baseline_from_tutorial_label = str(args.baseline_from_tutorial_label).strip() if args.baseline_from_tutorial_label else ""
     if baseline_from_tutorial_label:
-        manifest_labels.append(baseline_from_tutorial_label)
+        manifest_labels = [label for label in manifest_labels if label != baseline_from_tutorial_label]
+        manifest_labels = [baseline_from_tutorial_label] + manifest_labels
     manifest_labels = list(dict.fromkeys(manifest_labels))
     if not manifest_labels:
         raise ValueError("No difficulty bin labels available in split manifest for class scenario setup.")
@@ -437,7 +519,7 @@ def _build_class_scenario(split_manifest: dict[str, Any], args: argparse.Namespa
             continue
         if merged not in final_labels:
             final_labels.append(merged)
-    final_labels = _reorder_labels_baseline_after_easiest(
+    final_labels = _reorder_labels_baseline_first(
         labels=final_labels,
         baseline_label=baseline_from_tutorial_label or None,
     )
@@ -790,6 +872,31 @@ def _resolve_torch_runtime_device(requested_device: str) -> str:
             return "cuda"
         return "cpu"
     return wanted
+
+
+def _detect_nvidia_gpus(timeout_seconds: float = 3.0) -> tuple[bool, list[str], str | None]:
+    try:
+        completed = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=max(0.5, float(timeout_seconds)),
+            check=False,
+        )
+    except FileNotFoundError:
+        return False, [], "nvidia-smi not found"
+    except Exception as exc:  # noqa: BLE001
+        return False, [], f"nvidia-smi probe failed: {exc}"
+
+    if completed.returncode != 0:
+        stderr = str(completed.stderr or "").strip()
+        message = stderr if stderr else f"nvidia-smi return code {completed.returncode}"
+        return False, [], message
+
+    names = [line.strip() for line in str(completed.stdout or "").splitlines() if line.strip()]
+    if not names:
+        return False, [], "nvidia-smi returned no GPU names"
+    return True, names, None
 
 
 def _model_registry(random_state: int, torch_device: str) -> dict[str, dict[str, Any]]:
@@ -1175,6 +1282,71 @@ def _metric_bundle(y_true: np.ndarray, y_pred: np.ndarray, labels: list[str]) ->
     }
 
 
+def _write_live_confusion_png(
+    *,
+    metrics: dict[str, Any],
+    out_root: Path,
+    class_scenario_name: str,
+    dataset: str,
+    protocol: str,
+    split_id: str,
+    pipeline_id: str,
+    eval_index: int,
+    cmap: str,
+    dpi: int,
+) -> Path:
+    labels = [str(x) for x in metrics.get("confusion_matrix_labels", [])]
+    counts = np.asarray(metrics.get("confusion_matrix", []), dtype=np.float64)
+    if counts.ndim != 2 or counts.shape[0] != counts.shape[1] or counts.shape[0] != len(labels):
+        raise ValueError("Confusion matrix shape/labels mismatch for live confusion PNG export.")
+
+    support = counts.sum(axis=1)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        norm = np.divide(counts, support[:, None], where=support[:, None] > 0.0)
+    norm = np.nan_to_num(norm, nan=0.0, posinf=0.0, neginf=0.0)
+
+    n_classes = max(1, len(labels))
+    fig_w = max(6.0, min(16.0, 1.1 * n_classes + 2.0))
+    fig_h = max(5.0, min(14.0, 1.0 * n_classes + 2.5))
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    im = ax.imshow(norm, interpolation="nearest", cmap=cmap, vmin=0.0, vmax=1.0)
+    ax.figure.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    ax.set(
+        xticks=np.arange(len(labels)),
+        yticks=np.arange(len(labels)),
+        xticklabels=labels,
+        yticklabels=labels,
+        ylabel="True label",
+        xlabel="Predicted label",
+        title=(
+            f"{dataset} | {protocol} | {pipeline_id}\n"
+            f"split={split_id} | scenario={class_scenario_name}"
+        ),
+    )
+    plt.setp(ax.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor")
+
+    for i in range(norm.shape[0]):
+        for j in range(norm.shape[1]):
+            val = float(norm[i, j])
+            cnt = int(round(float(counts[i, j])))
+            text_color = "white" if val >= 0.55 else "black"
+            ax.text(j, i, f"{val:.2f}\n({cnt})", ha="center", va="center", color=text_color, fontsize=8)
+
+    fig.tight_layout()
+    out_subdir = (
+        out_root
+        / _slug(class_scenario_name)
+        / _slug(dataset)
+        / _slug(protocol)
+        / _slug(split_id)
+    )
+    out_subdir.mkdir(parents=True, exist_ok=True)
+    out_path = out_subdir / f"{int(eval_index):06d}__{_slug(pipeline_id)}.png"
+    fig.savefig(out_path, dpi=max(72, int(dpi)))
+    plt.close(fig)
+    return out_path
+
+
 def _fit_predict(
     estimator: BaseEstimator,
     feature_selector: Any,
@@ -1386,15 +1558,20 @@ def _prepare_dataset(
     df["_target_source_label"] = pd.Series(source_label, index=df.index, dtype="string").astype(str)
 
     rows_before_class_filter = int(df.shape[0])
-    full_class_counts = dict(Counter(df["_target_source_label"].tolist()))
+    manifest_labels_order = list(class_scenario.get("manifest_labels", []))
+    full_class_counts = _ordered_counts(df["_target_source_label"].tolist(), preferred_order=manifest_labels_order)
 
-    allowed_original_labels = set(class_scenario["allowed_original_labels"])
+    allowed_original_labels_order = list(class_scenario["allowed_original_labels"])
+    allowed_original_labels = set(allowed_original_labels_order)
     merge_map = {str(k): str(v) for k, v in class_scenario["merge_map"].items()}
     final_label_set = set(labels)
 
     df = df[df["_target_source_label"].isin(allowed_original_labels)].copy()
     rows_after_label_filter = int(df.shape[0])
-    class_counts_after_label_filter = dict(sorted(Counter(df["_target_source_label"].tolist()).items()))
+    class_counts_after_label_filter = _ordered_counts(
+        df["_target_source_label"].tolist(),
+        preferred_order=allowed_original_labels_order,
+    )
     if df.empty:
         raise ValueError(f"{dataset_name}: no rows left after class include/drop filters.")
 
@@ -1440,8 +1617,8 @@ def _prepare_dataset(
         "row_ids": row_ids,
         "trial_ids": trial_ids,
         "feature_columns": valid_feature_cols,
-        "class_counts": dict(Counter(y.tolist())),
-        "full_class_counts": dict(sorted(full_class_counts.items())),
+        "class_counts": _ordered_counts(y.tolist(), preferred_order=labels),
+        "full_class_counts": full_class_counts,
         "class_counts_after_label_filter": class_counts_after_label_filter,
         "rows_before_class_filter": rows_before_class_filter,
         "rows_after_label_filter": rows_after_label_filter,
@@ -1532,12 +1709,58 @@ def _aggregate_warning_counts(evaluations: list[dict[str, Any]]) -> dict[str, in
     return {k: warning_counter[k] for k in sorted(warning_counter, key=lambda x: (-warning_counter[x], x))}
 
 
+def _protocol_debug_label(protocol: str) -> str:
+    mapping = {
+        "within_participant": "single_participant",
+        "group_holdout": "group",
+        "loso": "loso",
+        "pooled_stratified": "pooled_mixed",
+        "pooled_stratified_holdout": "pooled_mixed",
+        "pooled_stratified_one_fold": "pooled_mixed",
+    }
+    return mapping.get(protocol, protocol)
+
+
+def _dataset_protocol_coverage(
+    aggregate_rows: list[dict[str, Any]],
+    datasets: list[str],
+    protocols: list[str],
+    min_aggregate_rows_per_pair: int,
+) -> dict[str, Any]:
+    pair_counts: Counter[tuple[str, str]] = Counter()
+    for row in aggregate_rows:
+        dataset = str(row.get("dataset", ""))
+        protocol = str(row.get("protocol", ""))
+        if not dataset or not protocol:
+            continue
+        pair_counts[(dataset, protocol)] += 1
+
+    pairs_summary: list[dict[str, Any]] = []
+    missing_pairs: list[dict[str, Any]] = []
+    for dataset in datasets:
+        for protocol in protocols:
+            count = int(pair_counts.get((dataset, protocol), 0))
+            entry = {"dataset": dataset, "protocol": protocol, "aggregate_rows": count}
+            pairs_summary.append(entry)
+            if min_aggregate_rows_per_pair > 0 and count < min_aggregate_rows_per_pair:
+                missing_pairs.append(entry)
+
+    return {
+        "min_aggregate_rows_per_pair": int(min_aggregate_rows_per_pair),
+        "pairs": pairs_summary,
+        "missing_pairs": missing_pairs,
+    }
+
+
 def _build_summary_markdown(
     config: dict[str, Any],
     dataset_stats: list[dict[str, Any]],
     aggregate_rows: list[dict[str, Any]],
     best_rows: list[dict[str, Any]],
     warning_counts_total: dict[str, int],
+    coverage: dict[str, Any],
+    skip_counts: dict[str, int],
+    eeg_condition_psd: dict[str, Any] | None,
 ) -> str:
     lines: list[str] = []
     lines.append("# Stage 6 ML Summary")
@@ -1550,9 +1773,65 @@ def _build_summary_markdown(
     lines.append(f"- Datasets: `{', '.join(config['datasets'])}`")
     lines.append(f"- Inner folds: `{config['inner_folds']}`")
     lines.append(f"- Max param combos/model: `{config['max_param_combos']}`")
+    lines.append(f"- Pooled stratified folds: `{config.get('pooled_stratified_folds', 'n/a')}`")
+    lines.append(
+        f"- Pooled no-folds mode: "
+        f"`{config.get('pooled_stratified_no_folds', False)}`"
+    )
+    lines.append(
+        f"- Pooled test size: "
+        f"`{config.get('pooled_stratified_test_size', 'n/a')}`"
+    )
+    lines.append(
+        f"- Within-participant no-folds mode: "
+        f"`{config.get('within_participant_no_folds', False)}`"
+    )
+    lines.append(
+        f"- Within-participant test size: "
+        f"`{config.get('within_participant_test_size', 'n/a')}`"
+    )
+    lines.append(f"- Torch available: `{config.get('torch_available', False)}`")
+    lines.append(
+        f"- Torch device requested/effective: "
+        f"`{config.get('torch_device_requested', 'auto')}` -> `{config.get('torch_device_effective', 'cpu')}`"
+    )
+    lines.append(f"- NVIDIA GPU detected: `{config.get('nvidia_gpu_detected', False)}`")
+    gpu_names = [str(x) for x in config.get("nvidia_gpu_names", []) if str(x).strip()]
+    if gpu_names:
+        lines.append(f"- NVIDIA GPU names: `{', '.join(gpu_names)}`")
+    lines.append(f"- Live confusion PNGs during training: `{config.get('live_confusion_pngs', False)}`")
+    lines.append(f"- EEG condition PSD plots: `{config.get('eeg_condition_psd_plots', False)}`")
     class_cfg = config.get("class_scenario", {})
     lines.append(f"- Class scenario: `{class_cfg.get('name', 'default')}`")
     lines.append(f"- Final labels: `{', '.join(class_cfg.get('final_labels', []))}`")
+    lines.append("")
+    lines.append("## EEG PSD / Topomap QC")
+    if eeg_condition_psd:
+        lines.append(f"- Status: `{eeg_condition_psd.get('status', 'unknown')}`")
+        manifest_json = str(eeg_condition_psd.get("manifest_json", "") or "").strip()
+        if manifest_json:
+            lines.append(f"- Manifest: `{manifest_json}`")
+        all_participants_png = str(eeg_condition_psd.get("all_participants_png", "") or "").strip()
+        if all_participants_png:
+            lines.append(f"- All participants PSD PNG: `{all_participants_png}`")
+        all_participants_topomap_png = str(eeg_condition_psd.get("all_participants_topomap_png", "") or "").strip()
+        if all_participants_topomap_png:
+            lines.append(f"- All participants topomap PNG: `{all_participants_topomap_png}`")
+        roi_reference_topomap_png = str(eeg_condition_psd.get("roi_reference_topomap_png", "") or "").strip()
+        if roi_reference_topomap_png:
+            lines.append(f"- EEG ROI reference PNG: `{roi_reference_topomap_png}`")
+        if eeg_condition_psd.get("status") == "ok":
+            lines.append(
+                f"- Participants plotted: `{int(eeg_condition_psd.get('n_participants_plotted', 0))}`"
+            )
+            label_order_plotted = [str(x) for x in eeg_condition_psd.get("label_order_plotted", []) if str(x).strip()]
+            if label_order_plotted:
+                lines.append(f"- Conditions plotted: `{', '.join(label_order_plotted)}`")
+        reason = str(eeg_condition_psd.get("reason", "") or "").strip()
+        if reason:
+            lines.append(f"- Note: `{reason}`")
+    else:
+        lines.append("- Status: disabled")
     lines.append("")
     lines.append("## Dataset Snapshot")
     for ds in dataset_stats:
@@ -1561,23 +1840,58 @@ def _build_summary_markdown(
             f"participants={ds['n_participants']}, classes={ds['n_classes']}"
         )
     lines.append("")
-    lines.append("## Best By Dataset/Protocol")
-    for row in best_rows:
+    lines.append("## Coverage")
+    lines.append(
+        f"- Minimum aggregate rows required per dataset+protocol: `{coverage.get('min_aggregate_rows_per_pair', 0)}`"
+    )
+    missing_pairs = list(coverage.get("missing_pairs", []))
+    if missing_pairs:
+        lines.append("- Missing pairs:")
+        for pair in missing_pairs:
+            lines.append(
+                f"  - `{pair['dataset']}` + `{pair['protocol']}` "
+                f"(aggregate_rows={int(pair.get('aggregate_rows', 0))})"
+            )
+    else:
+        lines.append("- Missing pairs: none")
+    lines.append("")
+    lines.append("| dataset | protocol | aggregate_rows |")
+    lines.append("|---|---|---:|")
+    for pair in coverage.get("pairs", []):
         lines.append(
-            f"- `{row['dataset']}` + `{row['protocol']}` -> `{row.get('best_pipeline', row['best_model'])}` "
-            f"(balanced_acc={row['balanced_accuracy_mean']:.4f}, macro_f1={row['macro_f1_mean']:.4f}, "
-            f"n={row['n_evaluations']})"
+            f"| {pair['dataset']} | {pair['protocol']} | {int(pair.get('aggregate_rows', 0))} |"
         )
+    lines.append("")
+    lines.append("## Best By Dataset/Protocol")
+    if best_rows:
+        for row in best_rows:
+            lines.append(
+                f"- `{row['dataset']}` + `{row['protocol']}` -> `{row.get('best_pipeline', row['best_model'])}` "
+                f"(balanced_acc={row['balanced_accuracy_mean']:.4f}, macro_f1={row['macro_f1_mean']:.4f}, "
+                f"n={row['n_evaluations']})"
+            )
+    else:
+        lines.append("- none")
     lines.append("")
     lines.append("## Aggregates")
     lines.append("| dataset | protocol | model | feature_selector | pipeline_id | n | balanced_acc_mean | macro_f1_mean |")
     lines.append("|---|---|---|---|---|---:|---:|---:|")
-    for row in aggregate_rows:
-        lines.append(
-            f"| {row['dataset']} | {row['protocol']} | {row['model']} | {row.get('feature_selector', 'none')} | "
-            f"{row.get('pipeline_id', row['model'])} | {row['n_evaluations']} | "
-            f"{row['balanced_accuracy_mean']:.4f} | {row['macro_f1_mean']:.4f} |"
-        )
+    if aggregate_rows:
+        for row in aggregate_rows:
+            lines.append(
+                f"| {row['dataset']} | {row['protocol']} | {row['model']} | {row.get('feature_selector', 'none')} | "
+                f"{row.get('pipeline_id', row['model'])} | {row['n_evaluations']} | "
+                f"{row['balanced_accuracy_mean']:.4f} | {row['macro_f1_mean']:.4f} |"
+            )
+    else:
+        lines.append("| n/a | n/a | n/a | n/a | n/a | 0 | 0.0000 | 0.0000 |")
+    lines.append("")
+    lines.append("## Skip Summary")
+    if skip_counts:
+        for key, count in sorted(skip_counts.items(), key=lambda x: (-x[1], x[0])):
+            lines.append(f"- {key}: {count}")
+    else:
+        lines.append("- none")
     lines.append("")
     lines.append("## Warning Summary")
     if warning_counts_total:
@@ -1593,7 +1907,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Stage 6 classic ML battery with leakage-safe preprocessing and "
-            "group-aware evaluation (within-participant, LOSO, grouped holdout)."
+            "multiple evaluation protocols (within-participant, LOSO, grouped holdout, pooled stratified)."
         )
     )
     parser.add_argument("--bids-root", required=True, help="Path to BIDS root.")
@@ -1603,7 +1917,11 @@ def main() -> None:
         "--protocols",
         nargs="*",
         default=None,
-        help="Evaluation protocols: loso group_holdout within_participant (default: all).",
+        help=(
+            "Evaluation protocols: loso group_holdout within_participant "
+            "pooled_stratified pooled_stratified_holdout pooled_stratified_one_fold "
+            "(default: all)."
+        ),
     )
     parser.add_argument(
         "--models",
@@ -1632,6 +1950,63 @@ def main() -> None:
         type=int,
         default=None,
         help="Optional cap on outer splits per protocol for quick runs.",
+    )
+    parser.add_argument(
+        "--pooled-stratified-folds",
+        type=int,
+        default=5,
+        help=(
+            "Number of folds for pooled_stratified protocol "
+            "(all participants mixed; row-level stratified CV)."
+        ),
+    )
+    parser.add_argument(
+        "--pooled-stratified-no-folds",
+        action="store_true",
+        help=(
+            "Use one stratified holdout split for pooled_stratified "
+            "(instead of K-fold CV)."
+        ),
+    )
+    parser.add_argument(
+        "--pooled-stratified-test-size",
+        type=float,
+        default=0.20,
+        help=(
+            "Test fraction for --pooled-stratified-no-folds "
+            "(default: 0.20)."
+        ),
+    )
+    parser.add_argument(
+        "--within-participant-no-folds",
+        action="store_true",
+        help=(
+            "Use one stratified holdout split per participant for within_participant "
+            "(instead of K-fold CV)."
+        ),
+    )
+    parser.add_argument(
+        "--within-participant-test-size",
+        type=float,
+        default=0.20,
+        help=(
+            "Test fraction for --within-participant-no-folds "
+            "(default: 0.20)."
+        ),
+    )
+    parser.add_argument(
+        "--min-aggregate-rows-per-dataset-protocol",
+        type=int,
+        default=1,
+        help=(
+            "Minimum aggregate rows required per dataset+protocol pair. "
+            "Set to 0 to disable coverage checks."
+        ),
+    )
+    parser.add_argument(
+        "--allow-incomplete-coverage",
+        action="store_true",
+        help="Do not fail if dataset+protocol coverage checks are not met.",
     )
     parser.add_argument("--clip-lower-quantile", type=float, default=0.01)
     parser.add_argument("--clip-upper-quantile", type=float, default=0.99)
@@ -1678,6 +2053,68 @@ def main() -> None:
     parser.add_argument("--run-tag", default=None, help="Optional model run tag.")
     parser.add_argument("--results-json", default=None, help="Output JSON path (default: reports/ml_results.json).")
     parser.add_argument("--summary-md", default=None, help="Output markdown path (default: reports/ml_summary.md).")
+    parser.add_argument(
+        "--eeg-condition-psd-plots",
+        dest="eeg_condition_psd_plots",
+        action="store_true",
+        default=True,
+        help=(
+            "Write scenario-aware EEG power spectrum QC plots by ROI for all participants "
+            "and each single participant (default: enabled)."
+        ),
+    )
+    parser.add_argument(
+        "--no-eeg-condition-psd-plots",
+        dest="eeg_condition_psd_plots",
+        action="store_false",
+        help="Disable scenario-aware EEG power spectrum QC plots.",
+    )
+    parser.add_argument(
+        "--eeg-condition-psd-dir",
+        default=None,
+        help="Output root for scenario-aware EEG PSD plots (default: analysis_pipeline/reports/eeg_condition_psd).",
+    )
+    parser.add_argument(
+        "--eeg-condition-psd-fmin",
+        type=float,
+        default=2.0,
+        help="Minimum frequency for EEG condition PSD plots (default: 2.0 Hz).",
+    )
+    parser.add_argument(
+        "--eeg-condition-psd-fmax",
+        type=float,
+        default=40.0,
+        help="Maximum frequency for EEG condition PSD plots (default: 40.0 Hz).",
+    )
+    parser.add_argument(
+        "--live-confusion-pngs",
+        dest="live_confusion_pngs",
+        action="store_true",
+        default=True,
+        help="Write a confusion PNG for each evaluated model/split as training runs (default: enabled).",
+    )
+    parser.add_argument(
+        "--no-live-confusion-pngs",
+        dest="live_confusion_pngs",
+        action="store_false",
+        help="Disable per-evaluation live confusion PNG writing.",
+    )
+    parser.add_argument(
+        "--live-confusion-png-dir",
+        default=None,
+        help="Directory for per-evaluation live confusion PNGs (default: analysis_pipeline/reports/confusion_pngs_live).",
+    )
+    parser.add_argument(
+        "--live-confusion-png-cmap",
+        default="Blues",
+        help="Matplotlib colormap for live confusion PNGs.",
+    )
+    parser.add_argument(
+        "--live-confusion-png-dpi",
+        type=int,
+        default=150,
+        help="PNG DPI for live confusion PNGs (default: 150).",
+    )
     parser.add_argument("--models-root", default=None, help="Model artifact root (default: analysis_pipeline/models).")
     parser.add_argument(
         "--torch-device",
@@ -1690,12 +2127,26 @@ def main() -> None:
         raise ValueError("--inner-folds must be >= 2.")
     if args.max_param_combos < 1:
         raise ValueError("--max-param-combos must be >= 1.")
+    if args.pooled_stratified_folds < 2:
+        raise ValueError("--pooled-stratified-folds must be >= 2.")
+    if args.pooled_stratified_test_size <= 0 or args.pooled_stratified_test_size >= 1:
+        raise ValueError("--pooled-stratified-test-size must be within (0,1).")
+    if args.within_participant_test_size <= 0 or args.within_participant_test_size >= 1:
+        raise ValueError("--within-participant-test-size must be within (0,1).")
+    if args.min_aggregate_rows_per_dataset_protocol < 0:
+        raise ValueError("--min-aggregate-rows-per-dataset-protocol must be >= 0.")
+    if args.live_confusion_png_dpi < 72:
+        raise ValueError("--live-confusion-png-dpi must be >= 72.")
     if args.clip_lower_quantile < 0 or args.clip_lower_quantile >= 1:
         raise ValueError("--clip-lower-quantile must be within [0,1).")
     if args.clip_upper_quantile <= 0 or args.clip_upper_quantile > 1:
         raise ValueError("--clip-upper-quantile must be within (0,1].")
     if args.clip_lower_quantile >= args.clip_upper_quantile:
         raise ValueError("clip lower quantile must be less than clip upper quantile.")
+    if args.eeg_condition_psd_fmin < 0:
+        raise ValueError("--eeg-condition-psd-fmin must be >= 0.")
+    if args.eeg_condition_psd_fmax <= args.eeg_condition_psd_fmin:
+        raise ValueError("--eeg-condition-psd-fmax must be greater than --eeg-condition-psd-fmin.")
     args.torch_device = str(args.torch_device or "auto").strip() or "auto"
     if not TORCH_AVAILABLE and args.torch_device.lower() != "auto":
         raise ValueError("PyTorch is not installed, so --torch-device cannot be set.")
@@ -1721,6 +2172,7 @@ def main() -> None:
     models = _coerce_model_list(args.models)
     feature_selectors = _coerce_feature_selector_list(args.feature_selectors)
     torch_device_effective = _resolve_torch_runtime_device(args.torch_device)
+    nvidia_gpu_detected, nvidia_gpu_names, nvidia_probe_message = _detect_nvidia_gpus()
     registry = _model_registry(random_state=args.random_seed, torch_device=args.torch_device)
     selector_registry = _feature_selector_registry(random_state=args.random_seed)
     stage_started = time.time()
@@ -1730,22 +2182,55 @@ def main() -> None:
     print(f"  Protocols: {', '.join(protocols)}")
     print(f"  Models: {', '.join(models)}")
     print(f"  Feature selectors: {', '.join(feature_selectors)}")
+    print(f"  Class scenario: {class_scenario['name']} ({len(labels)} classes)")
     print(f"  Torch available: {TORCH_AVAILABLE}")
+    print(f"  NVIDIA GPU detected: {nvidia_gpu_detected}")
+    if nvidia_gpu_detected:
+        print(f"  NVIDIA GPUs: {', '.join(nvidia_gpu_names)}")
+    elif nvidia_probe_message:
+        print(f"  NVIDIA probe note: {nvidia_probe_message}")
     if TORCH_AVAILABLE:
         print(f"  Torch device requested: {args.torch_device}")
         print(f"  Torch device effective: {torch_device_effective}")
         if torch_device_effective.startswith("cuda") and torch is not None and torch.cuda.is_available():
             print(f"  CUDA device name: {torch.cuda.get_device_name(0)}")
+        elif nvidia_gpu_detected and (torch is None or not torch.cuda.is_available()):
+            print(
+                "  WARNING: NVIDIA GPU detected but torch.cuda.is_available() is False. "
+                "Install a CUDA-enabled PyTorch build to run deep models on GPU."
+            )
+    elif nvidia_gpu_detected:
+        print(
+            "  WARNING: NVIDIA GPU detected but PyTorch is unavailable. "
+            "Deep models require a CUDA-enabled PyTorch installation."
+        )
 
     results_json = Path(args.results_json).resolve() if args.results_json else _default_results_json()
     summary_md = Path(args.summary_md).resolve() if args.summary_md else _default_summary_md()
     models_root = Path(args.models_root).resolve() if args.models_root else _models_root()
+    live_confusion_png_dir = (
+        Path(args.live_confusion_png_dir).resolve()
+        if args.live_confusion_png_dir
+        else _default_live_confusion_png_dir()
+    )
+    eeg_condition_psd_dir = (
+        Path(args.eeg_condition_psd_dir).resolve()
+        if args.eeg_condition_psd_dir
+        else _default_eeg_condition_psd_dir()
+    )
 
     run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     run_tag = args.run_tag.strip() if args.run_tag else "default"
     run_dir = models_root / f"stage6_{run_stamp}_{run_tag}"
     run_dir.mkdir(parents=True, exist_ok=True)
     print(f"  Run dir: {run_dir}")
+    print(f"  Live confusion PNGs: {bool(args.live_confusion_pngs)}")
+    if args.live_confusion_pngs:
+        live_confusion_png_dir.mkdir(parents=True, exist_ok=True)
+        print(f"  Live confusion PNG dir: {live_confusion_png_dir}")
+    print(f"  EEG condition PSD plots: {bool(args.eeg_condition_psd_plots)}")
+    if args.eeg_condition_psd_plots:
+        print(f"  EEG condition PSD dir: {eeg_condition_psd_dir}")
 
     dataset_payloads: dict[str, dict[str, Any]] = {}
     dataset_stats: list[dict[str, Any]] = []
@@ -1784,12 +2269,35 @@ def main() -> None:
             f"features={payload['X'].shape[1]} participants={len(set(payload['participants'].tolist()))}"
         )
 
-    evaluations: list[dict[str, Any]] = []
+    eeg_condition_psd: dict[str, Any] | None = None
+    if args.eeg_condition_psd_plots:
+        epoch_manifest_path: Path | None = None
+        epoch_manifest_value = split_manifest.get("epoch_manifest")
+        if epoch_manifest_value:
+            epoch_manifest_path = _resolve_dataset_path(str(epoch_manifest_value), split_manifest_path)
+        eeg_payload = dataset_payloads.get("eeg")
+        eeg_condition_psd = build_condition_psd_report(
+            eeg_df=(eeg_payload["df"] if eeg_payload is not None else None),
+            epoch_manifest_path=epoch_manifest_path,
+            out_dir=eeg_condition_psd_dir / _slug(class_scenario["name"]),
+            scenario_name=class_scenario["name"],
+            label_order=labels,
+            fmin=float(args.eeg_condition_psd_fmin),
+            fmax=float(args.eeg_condition_psd_fmax),
+        )
+        print(f"  EEG condition PSD status: {eeg_condition_psd.get('status', 'unknown')}")
+        print(f"  EEG condition PSD manifest: {eeg_condition_psd.get('manifest_json', '')}")
+        if eeg_condition_psd.get("all_participants_png"):
+            print(f"  EEG condition PSD all participants PNG: {eeg_condition_psd['all_participants_png']}")
+        if eeg_condition_psd.get("all_participants_topomap_png"):
+            print(f"  EEG condition topomap all participants PNG: {eeg_condition_psd['all_participants_topomap_png']}")
 
-    strategy_map = {
-        "loso": split_manifest.get("strategies", {}).get("leave_one_participant_out", []),
-        "group_holdout": split_manifest.get("strategies", {}).get("group_holdout", []),
-    }
+    evaluations: list[dict[str, Any]] = []
+    skip_counts: Counter[str] = Counter()
+    live_confusion_png_count = 0
+
+    global_strategies = split_manifest.get("strategies", {}) or {}
+    dataset_strategy_map = split_manifest.get("dataset_strategies", {}) or {}
 
     dataset_protocol_total = len(datasets) * len(protocols)
     dataset_protocol_idx = 0
@@ -1799,12 +2307,29 @@ def main() -> None:
         y = payload["y"]
         groups = payload["groups"]
         participants = payload["participants"]
+        dataset_strategies = dataset_strategy_map.get(dataset_name, {}) or {}
+        strategy_map = {
+            "loso": dataset_strategies.get(
+                "leave_one_participant_out",
+                global_strategies.get("leave_one_participant_out", []),
+            ),
+            "group_holdout": dataset_strategies.get(
+                "group_holdout",
+                global_strategies.get("group_holdout", []),
+            ),
+            "within_participant": dataset_strategies.get(
+                "within_participant",
+                global_strategies.get("within_participant", []),
+            ),
+        }
 
         for protocol in protocols:
             dataset_protocol_idx += 1
+            protocol_debug = _protocol_debug_label(protocol)
             print(
                 f"[Evaluation {dataset_protocol_idx}/{dataset_protocol_total}] "
-                f"dataset={dataset_name} protocol={protocol}"
+                f"dataset={dataset_name} protocol={protocol} "
+                f"classification_set={protocol_debug} class_scenario={class_scenario['name']}"
             )
             if protocol in ("loso", "group_holdout"):
                 split_plan = _sample_plan_items(
@@ -1820,11 +2345,13 @@ def main() -> None:
                     train_idx, _ = _subset_by_participants(payload, train_participants)
                     test_idx, _ = _subset_by_participants(payload, test_participants)
                     if train_idx.size < 10 or test_idx.size < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:split_insufficient_rows"] += 1
                         continue
 
                     y_train = y[train_idx]
                     y_test = y[test_idx]
                     if len(set(y_train.tolist())) < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:split_single_train_class"] += 1
                         continue
 
                     X_train = X[train_idx]
@@ -1837,12 +2364,21 @@ def main() -> None:
                         f"model_selectors={len(models)}x{len(feature_selectors)}"
                     )
 
+                    combo_total = len(models) * len(feature_selectors)
+                    combo_idx = 0
                     for model_key in models:
                         model_spec = registry[model_key]
                         estimator = model_spec["estimator"]
                         model_label = str(model_spec.get("label", model_key))
                         model_grid = _prefix_param_grid(list(model_spec["grid"]), prefix="model")
                         for selector_key in feature_selectors:
+                            combo_idx += 1
+                            print(
+                                f"      [Train {combo_idx}/{combo_total}] "
+                                f"dataset={dataset_name} class_scenario={class_scenario['name']} "
+                                f"classification_set={protocol_debug} protocol={protocol} "
+                                f"split={split_name} model={model_key} selector={selector_key}"
+                            )
                             selector_spec = selector_registry[selector_key]
                             selector = selector_spec["selector"]
                             selector_label = str(selector_spec.get("label", selector_key))
@@ -1884,40 +2420,56 @@ def main() -> None:
                                 warning_counter=outer_warning_counter,
                             )
                             if y_pred is None:
+                                skip_counts[f"{dataset_name}:{protocol}:fit_predict_failed"] += 1
                                 continue
                             metrics = _metric_bundle(y_test, y_pred, labels=labels)
                             best_model_params, best_selector_params, best_other_params = _split_pipeline_params(best_params)
                             pipeline_id = f"{model_key}+{selector_key}"
-                            evaluations.append(
-                                {
-                                    "dataset": dataset_name,
-                                    "protocol": protocol,
-                                    "model": model_key,
-                                    "model_label": model_label,
-                                    "feature_selector": selector_key,
-                                    "feature_selector_label": selector_label,
-                                    "pipeline_id": pipeline_id,
-                                    "pipeline_label": f"{model_label} + {selector_label}",
-                                    "split_id": split_name,
-                                    "n_train_rows": int(train_idx.size),
-                                    "n_test_rows": int(test_idx.size),
-                                    "n_train_participants": int(len(set(participants[train_idx].tolist()))),
-                                    "n_test_participants": int(len(set(participants[test_idx].tolist()))),
-                                    "best_params": best_params,
-                                    "best_model_params": best_model_params,
-                                    "best_feature_selector_params": best_selector_params,
-                                    "best_pipeline_other_params": best_other_params,
-                                    "tuning": tune_summary,
-                                    "warning_counts": {
-                                        "tuning": tune_summary.get("warning_counts", {}),
-                                        "outer_fit_predict": dict(sorted(outer_warning_counter.items())),
-                                    },
-                                    "metrics": metrics,
-                                }
-                            )
+                            eval_row: dict[str, Any] = {
+                                "dataset": dataset_name,
+                                "protocol": protocol,
+                                "model": model_key,
+                                "model_label": model_label,
+                                "feature_selector": selector_key,
+                                "feature_selector_label": selector_label,
+                                "pipeline_id": pipeline_id,
+                                "pipeline_label": f"{model_label} + {selector_label}",
+                                "split_id": split_name,
+                                "n_train_rows": int(train_idx.size),
+                                "n_test_rows": int(test_idx.size),
+                                "n_train_participants": int(len(set(participants[train_idx].tolist()))),
+                                "n_test_participants": int(len(set(participants[test_idx].tolist()))),
+                                "best_params": best_params,
+                                "best_model_params": best_model_params,
+                                "best_feature_selector_params": best_selector_params,
+                                "best_pipeline_other_params": best_other_params,
+                                "tuning": tune_summary,
+                                "warning_counts": {
+                                    "tuning": tune_summary.get("warning_counts", {}),
+                                    "outer_fit_predict": dict(sorted(outer_warning_counter.items())),
+                                },
+                                "metrics": metrics,
+                            }
+                            if args.live_confusion_pngs:
+                                live_png = _write_live_confusion_png(
+                                    metrics=metrics,
+                                    out_root=live_confusion_png_dir,
+                                    class_scenario_name=class_scenario["name"],
+                                    dataset=dataset_name,
+                                    protocol=protocol,
+                                    split_id=split_name,
+                                    pipeline_id=pipeline_id,
+                                    eval_index=len(evaluations) + 1,
+                                    cmap=str(args.live_confusion_png_cmap),
+                                    dpi=int(args.live_confusion_png_dpi),
+                                )
+                                live_confusion_png_count += 1
+                                eval_row["confusion_png_live"] = str(live_png)
+                                print(f"        Live confusion PNG: {live_png}")
+                            evaluations.append(eval_row)
             elif protocol == "within_participant":
                 within_plan = _sample_plan_items(
-                    items=list(split_manifest.get("strategies", {}).get("within_participant", [])),
+                    items=list(strategy_map.get("within_participant", [])),
                     max_count=args.max_outer_splits_per_protocol,
                     seed=args.random_seed + len(dataset_name) + 17,
                 )
@@ -1925,36 +2477,63 @@ def main() -> None:
                 for within_item in within_plan:
                     participant_id = str(within_item.get("participant_id", ""))
                     if not participant_id:
+                        skip_counts[f"{dataset_name}:{protocol}:missing_participant_id"] += 1
                         continue
                     if not bool(within_item.get("eligible_for_within_participant_cv", False)):
-                        continue
-                    rec_splits = int(within_item.get("recommended_n_splits", 0))
-                    if rec_splits < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:participant_not_eligible"] += 1
                         continue
                     participant_mask = participants == participant_id
                     idx_all = np.where(participant_mask)[0]
                     if idx_all.size < 8:
+                        skip_counts[f"{dataset_name}:{protocol}:participant_rows_lt8"] += 1
                         continue
                     y_participant = y[idx_all]
                     counts = Counter(y_participant.tolist())
                     if len(counts) < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:participant_single_class"] += 1
                         continue
-                    max_splits_by_class = min(counts.values())
-                    n_splits = min(rec_splits, int(max_splits_by_class))
-                    if n_splits < 2:
-                        continue
+                    participant_seed = _stable_seed_from_text(participant_id, args.random_seed)
+                    if args.within_participant_no_folds:
+                        min_class_support = min(counts.values())
+                        if min_class_support < 2:
+                            skip_counts[f"{dataset_name}:{protocol}:class_support_lt2_no_fold"] += 1
+                            continue
+                        splitter = StratifiedShuffleSplit(
+                            n_splits=1,
+                            test_size=float(args.within_participant_test_size),
+                            random_state=participant_seed,
+                        )
+                        split_iter = splitter.split(np.zeros(idx_all.size), y_participant)
+                        split_name_prefix = "holdout"
+                        print(
+                            f"    Participant {participant_id}: holdout_splits=1 "
+                            f"test_size={args.within_participant_test_size:.2f} "
+                            f"model_selectors={len(models)}x{len(feature_selectors)}"
+                        )
+                    else:
+                        rec_splits = int(within_item.get("recommended_n_splits", 0))
+                        if rec_splits < 2:
+                            skip_counts[f"{dataset_name}:{protocol}:recommended_splits_lt2"] += 1
+                            continue
+                        max_splits_by_class = min(counts.values())
+                        n_splits = min(rec_splits, int(max_splits_by_class))
+                        if n_splits < 2:
+                            skip_counts[f"{dataset_name}:{protocol}:folds_lt2_after_class_cap"] += 1
+                            continue
+                        splitter = StratifiedKFold(
+                            n_splits=n_splits,
+                            shuffle=True,
+                            random_state=participant_seed,
+                        )
+                        split_iter = splitter.split(np.zeros(idx_all.size), y_participant)
+                        split_name_prefix = "fold"
+                        print(
+                            f"    Participant {participant_id}: folds={n_splits} "
+                            f"model_selectors={len(models)}x{len(feature_selectors)}"
+                        )
 
-                    splitter = StratifiedKFold(
-                        n_splits=n_splits,
-                        shuffle=True,
-                        random_state=_stable_seed_from_text(participant_id, args.random_seed),
-                    )
-                    print(
-                        f"    Participant {participant_id}: folds={n_splits} "
-                        f"model_selectors={len(models)}x{len(feature_selectors)}"
-                    )
-                    for fold_idx, (inner_train_pos, inner_test_pos) in enumerate(
-                        splitter.split(np.zeros(idx_all.size), y_participant),
+                    for split_idx, (inner_train_pos, inner_test_pos) in enumerate(
+                        split_iter,
                         start=1,
                     ):
                         train_idx = idx_all[inner_train_pos]
@@ -1964,14 +2543,25 @@ def main() -> None:
                         X_test = X[test_idx]
                         y_test = y[test_idx]
                         if len(set(y_train.tolist())) < 2:
+                            skip_counts[f"{dataset_name}:{protocol}:fold_single_train_class"] += 1
                             continue
 
+                        combo_total = len(models) * len(feature_selectors)
+                        combo_idx = 0
                         for model_key in models:
                             model_spec = registry[model_key]
                             estimator = model_spec["estimator"]
                             model_label = str(model_spec.get("label", model_key))
                             model_grid = _prefix_param_grid(list(model_spec["grid"]), prefix="model")
                             for selector_key in feature_selectors:
+                                combo_idx += 1
+                                split_name = f"within_{participant_id}_{split_name_prefix}{split_idx:02d}"
+                                print(
+                                    f"      [Train {combo_idx}/{combo_total}] "
+                                    f"dataset={dataset_name} class_scenario={class_scenario['name']} "
+                                    f"classification_set={protocol_debug} protocol={protocol} "
+                                    f"split={split_name} model={model_key} selector={selector_key}"
+                                )
                                 selector_spec = selector_registry[selector_key]
                                 selector = selector_spec["selector"]
                                 selector_label = str(selector_spec.get("label", selector_key))
@@ -1980,7 +2570,7 @@ def main() -> None:
                                 param_grid = _sample_param_grid(
                                     combos=all_combos,
                                     max_count=args.max_param_combos,
-                                    seed=args.random_seed + fold_idx + len(model_key) + len(selector_key),
+                                    seed=args.random_seed + split_idx + len(model_key) + len(selector_key),
                                 )
                                 best_params, tune_summary = _choose_best_params(
                                     estimator=estimator,
@@ -1992,7 +2582,7 @@ def main() -> None:
                                     args=args,
                                     mode="stratified",
                                     groups_train=None,
-                                    seed=args.random_seed + fold_idx,
+                                    seed=args.random_seed + split_idx,
                                 )
                                 outer_warning_counter = Counter()
                                 y_pred = _fit_predict(
@@ -2006,44 +2596,245 @@ def main() -> None:
                                     warning_counter=outer_warning_counter,
                                 )
                                 if y_pred is None:
+                                    skip_counts[f"{dataset_name}:{protocol}:fit_predict_failed"] += 1
                                     continue
                                 metrics = _metric_bundle(y_test, y_pred, labels=labels)
                                 best_model_params, best_selector_params, best_other_params = _split_pipeline_params(
                                     best_params
                                 )
                                 pipeline_id = f"{model_key}+{selector_key}"
-                                evaluations.append(
-                                    {
-                                        "dataset": dataset_name,
-                                        "protocol": protocol,
-                                        "model": model_key,
-                                        "model_label": model_label,
-                                        "feature_selector": selector_key,
-                                        "feature_selector_label": selector_label,
-                                        "pipeline_id": pipeline_id,
-                                        "pipeline_label": f"{model_label} + {selector_label}",
-                                        "split_id": f"within_{participant_id}_fold{fold_idx:02d}",
-                                        "participant_id": participant_id,
-                                        "n_train_rows": int(train_idx.size),
-                                        "n_test_rows": int(test_idx.size),
-                                        "n_train_participants": 1,
-                                        "n_test_participants": 1,
-                                        "best_params": best_params,
-                                        "best_model_params": best_model_params,
-                                        "best_feature_selector_params": best_selector_params,
-                                        "best_pipeline_other_params": best_other_params,
-                                        "tuning": tune_summary,
-                                        "warning_counts": {
-                                            "tuning": tune_summary.get("warning_counts", {}),
-                                            "outer_fit_predict": dict(sorted(outer_warning_counter.items())),
-                                        },
-                                        "metrics": metrics,
-                                    }
+                                eval_row = {
+                                    "dataset": dataset_name,
+                                    "protocol": protocol,
+                                    "model": model_key,
+                                    "model_label": model_label,
+                                    "feature_selector": selector_key,
+                                    "feature_selector_label": selector_label,
+                                    "pipeline_id": pipeline_id,
+                                    "pipeline_label": f"{model_label} + {selector_label}",
+                                    "split_id": split_name,
+                                    "participant_id": participant_id,
+                                    "n_train_rows": int(train_idx.size),
+                                    "n_test_rows": int(test_idx.size),
+                                    "n_train_participants": 1,
+                                    "n_test_participants": 1,
+                                    "best_params": best_params,
+                                    "best_model_params": best_model_params,
+                                    "best_feature_selector_params": best_selector_params,
+                                    "best_pipeline_other_params": best_other_params,
+                                    "tuning": tune_summary,
+                                    "warning_counts": {
+                                        "tuning": tune_summary.get("warning_counts", {}),
+                                        "outer_fit_predict": dict(sorted(outer_warning_counter.items())),
+                                    },
+                                    "metrics": metrics,
+                                }
+                                if args.live_confusion_pngs:
+                                    live_png = _write_live_confusion_png(
+                                        metrics=metrics,
+                                        out_root=live_confusion_png_dir,
+                                        class_scenario_name=class_scenario["name"],
+                                        dataset=dataset_name,
+                                        protocol=protocol,
+                                        split_id=split_name,
+                                        pipeline_id=pipeline_id,
+                                        eval_index=len(evaluations) + 1,
+                                        cmap=str(args.live_confusion_png_cmap),
+                                        dpi=int(args.live_confusion_png_dpi),
+                                    )
+                                    live_confusion_png_count += 1
+                                    eval_row["confusion_png_live"] = str(live_png)
+                                    print(f"        Live confusion PNG: {live_png}")
+                                evaluations.append(eval_row)
+            elif protocol in ("pooled_stratified", "pooled_stratified_holdout", "pooled_stratified_one_fold"):
+                counts = Counter(y.tolist())
+                if len(counts) < 2:
+                    skip_counts[f"{dataset_name}:{protocol}:single_class_dataset"] += 1
+                    continue
+
+                n_splits = 1
+                split_total = 1
+                pooled_seed = _stable_seed_from_text(f"{dataset_name}:{class_scenario['name']}:pooled", args.random_seed)
+                protocol_forces_holdout = protocol == "pooled_stratified_holdout"
+                protocol_forces_one_fold = protocol == "pooled_stratified_one_fold"
+                use_pooled_holdout = bool(args.pooled_stratified_no_folds) or protocol_forces_holdout
+                use_single_pooled_fold = protocol_forces_one_fold
+                if use_pooled_holdout:
+                    min_class_support = min(counts.values())
+                    if min_class_support < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:class_support_lt2_no_fold"] += 1
+                        continue
+                    splitter = StratifiedShuffleSplit(
+                        n_splits=1,
+                        test_size=float(args.pooled_stratified_test_size),
+                        random_state=pooled_seed,
+                    )
+                    split_name_prefix = "pooled_holdout"
+                else:
+                    min_class_support = min(counts.values())
+                    n_splits = min(int(args.pooled_stratified_folds), int(min_class_support))
+                    if n_splits < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:folds_lt2_after_class_cap"] += 1
+                        continue
+                    splitter = StratifiedKFold(
+                        n_splits=n_splits,
+                        shuffle=True,
+                        random_state=pooled_seed,
+                    )
+                    split_name_prefix = "pooled_fold"
+                    split_total = n_splits
+
+                fold_plan = [{"fold_index": i + 1} for i in range(n_splits)]
+                fold_plan = _sample_plan_items(
+                    items=fold_plan,
+                    max_count=(1 if use_single_pooled_fold else args.max_outer_splits_per_protocol),
+                    seed=args.random_seed + len(dataset_name) + 31,
+                )
+                fold_indices = [int(item.get("fold_index", 0)) for item in fold_plan if int(item.get("fold_index", 0)) > 0]
+                selected_fold_set = set(fold_indices)
+                if not selected_fold_set:
+                    skip_counts[f"{dataset_name}:{protocol}:no_outer_folds_selected"] += 1
+                    continue
+
+                if use_pooled_holdout:
+                    print(
+                        "  Planned pooled holdout splits: "
+                        f"{len(selected_fold_set)} (of {split_total}, test_size={args.pooled_stratified_test_size:.2f})"
+                    )
+                else:
+                    print(f"  Planned pooled stratified folds: {len(selected_fold_set)} (of {split_total})")
+                for fold_idx, (train_idx, test_idx) in enumerate(splitter.split(np.zeros(X.shape[0]), y), start=1):
+                    if fold_idx not in selected_fold_set:
+                        continue
+
+                    if train_idx.size < 10 or test_idx.size < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:split_insufficient_rows"] += 1
+                        continue
+
+                    y_train = y[train_idx]
+                    y_test = y[test_idx]
+                    if len(set(y_train.tolist())) < 2:
+                        skip_counts[f"{dataset_name}:{protocol}:split_single_train_class"] += 1
+                        continue
+
+                    X_train = X[train_idx]
+                    X_test = X[test_idx]
+                    split_name = f"{split_name_prefix}{fold_idx:02d}"
+                    print(
+                        f"    Split {fold_idx}/{split_total} ({split_name}): "
+                        f"train_rows={train_idx.size} test_rows={test_idx.size} "
+                        f"model_selectors={len(models)}x{len(feature_selectors)}"
+                    )
+
+                    combo_total = len(models) * len(feature_selectors)
+                    combo_idx = 0
+                    for model_key in models:
+                        model_spec = registry[model_key]
+                        estimator = model_spec["estimator"]
+                        model_label = str(model_spec.get("label", model_key))
+                        model_grid = _prefix_param_grid(list(model_spec["grid"]), prefix="model")
+                        for selector_key in feature_selectors:
+                            combo_idx += 1
+                            print(
+                                f"      [Train {combo_idx}/{combo_total}] "
+                                f"dataset={dataset_name} class_scenario={class_scenario['name']} "
+                                f"classification_set={protocol_debug} protocol={protocol} "
+                                f"split={split_name} model={model_key} selector={selector_key}"
+                            )
+                            selector_spec = selector_registry[selector_key]
+                            selector = selector_spec["selector"]
+                            selector_label = str(selector_spec.get("label", selector_key))
+                            selector_grid = _prefix_param_grid(list(selector_spec["grid"]), prefix="selector")
+                            all_combos = _cross_param_grids(model_grid, selector_grid)
+                            param_grid = _sample_param_grid(
+                                combos=all_combos,
+                                max_count=args.max_param_combos,
+                                seed=args.random_seed + fold_idx + len(model_key) + len(selector_key),
+                            )
+                            best_params, tune_summary = _choose_best_params(
+                                estimator=estimator,
+                                feature_selector=selector,
+                                param_grid=param_grid,
+                                X_train=X_train,
+                                y_train=y_train,
+                                labels=labels,
+                                args=args,
+                                mode="stratified",
+                                groups_train=None,
+                                seed=args.random_seed + fold_idx,
+                            )
+                            outer_warning_counter = Counter()
+                            y_pred = _fit_predict(
+                                estimator=estimator,
+                                feature_selector=selector,
+                                params=best_params,
+                                X_train=X_train,
+                                y_train=y_train,
+                                X_test=X_test,
+                                args=args,
+                                warning_counter=outer_warning_counter,
+                            )
+                            if y_pred is None:
+                                skip_counts[f"{dataset_name}:{protocol}:fit_predict_failed"] += 1
+                                continue
+                            metrics = _metric_bundle(y_test, y_pred, labels=labels)
+                            best_model_params, best_selector_params, best_other_params = _split_pipeline_params(
+                                best_params
+                            )
+                            pipeline_id = f"{model_key}+{selector_key}"
+                            eval_row = {
+                                "dataset": dataset_name,
+                                "protocol": protocol,
+                                "model": model_key,
+                                "model_label": model_label,
+                                "feature_selector": selector_key,
+                                "feature_selector_label": selector_label,
+                                "pipeline_id": pipeline_id,
+                                "pipeline_label": f"{model_label} + {selector_label}",
+                                "split_id": split_name,
+                                "n_train_rows": int(train_idx.size),
+                                "n_test_rows": int(test_idx.size),
+                                "n_train_participants": int(len(set(participants[train_idx].tolist()))),
+                                "n_test_participants": int(len(set(participants[test_idx].tolist()))),
+                                "best_params": best_params,
+                                "best_model_params": best_model_params,
+                                "best_feature_selector_params": best_selector_params,
+                                "best_pipeline_other_params": best_other_params,
+                                "tuning": tune_summary,
+                                "warning_counts": {
+                                    "tuning": tune_summary.get("warning_counts", {}),
+                                    "outer_fit_predict": dict(sorted(outer_warning_counter.items())),
+                                },
+                                "metrics": metrics,
+                            }
+                            if args.live_confusion_pngs:
+                                live_png = _write_live_confusion_png(
+                                    metrics=metrics,
+                                    out_root=live_confusion_png_dir,
+                                    class_scenario_name=class_scenario["name"],
+                                    dataset=dataset_name,
+                                    protocol=protocol,
+                                    split_id=split_name,
+                                    pipeline_id=pipeline_id,
+                                    eval_index=len(evaluations) + 1,
+                                    cmap=str(args.live_confusion_png_cmap),
+                                    dpi=int(args.live_confusion_png_dpi),
                                 )
+                                live_confusion_png_count += 1
+                                eval_row["confusion_png_live"] = str(live_png)
+                                print(f"        Live confusion PNG: {live_png}")
+                            evaluations.append(eval_row)
 
     aggregate_rows = _aggregate_metric_rows(evaluations)
     best_rows = _best_model_by_dataset_protocol(aggregate_rows)
     warning_counts_total = _aggregate_warning_counts(evaluations)
+    skip_counts_total = {k: skip_counts[k] for k in sorted(skip_counts, key=lambda x: (-skip_counts[x], x))}
+    coverage = _dataset_protocol_coverage(
+        aggregate_rows=aggregate_rows,
+        datasets=datasets,
+        protocols=protocols,
+        min_aggregate_rows_per_pair=args.min_aggregate_rows_per_dataset_protocol,
+    )
 
     config = {
         "bids_root": str(bids_root),
@@ -2060,11 +2851,29 @@ def main() -> None:
         "torch_available": TORCH_AVAILABLE,
         "torch_device_requested": args.torch_device,
         "torch_device_effective": torch_device_effective,
+        "nvidia_gpu_detected": bool(nvidia_gpu_detected),
+        "nvidia_gpu_names": nvidia_gpu_names,
+        "nvidia_probe_message": nvidia_probe_message,
         "inner_folds": args.inner_folds,
         "max_param_combos": args.max_param_combos,
         "max_outer_splits_per_protocol": args.max_outer_splits_per_protocol,
+        "pooled_stratified_folds": int(args.pooled_stratified_folds),
+        "pooled_stratified_no_folds": bool(args.pooled_stratified_no_folds),
+        "pooled_stratified_test_size": float(args.pooled_stratified_test_size),
+        "within_participant_no_folds": bool(args.within_participant_no_folds),
+        "within_participant_test_size": float(args.within_participant_test_size),
+        "min_aggregate_rows_per_dataset_protocol": args.min_aggregate_rows_per_dataset_protocol,
+        "allow_incomplete_coverage": bool(args.allow_incomplete_coverage),
         "clip_lower_quantile": args.clip_lower_quantile,
         "clip_upper_quantile": args.clip_upper_quantile,
+        "live_confusion_pngs": bool(args.live_confusion_pngs),
+        "live_confusion_png_dir": str(live_confusion_png_dir),
+        "live_confusion_png_cmap": args.live_confusion_png_cmap,
+        "live_confusion_png_dpi": int(args.live_confusion_png_dpi),
+        "eeg_condition_psd_plots": bool(args.eeg_condition_psd_plots),
+        "eeg_condition_psd_dir": str(eeg_condition_psd_dir),
+        "eeg_condition_psd_fmin": float(args.eeg_condition_psd_fmin),
+        "eeg_condition_psd_fmax": float(args.eeg_condition_psd_fmax),
         "random_seed": args.random_seed,
         "run_dir": str(run_dir),
         "run_tag": run_tag,
@@ -2078,9 +2887,13 @@ def main() -> None:
         "aggregates": aggregate_rows,
         "best_models": best_rows,
         "warning_counts_total": warning_counts_total,
+        "skip_counts_total": skip_counts_total,
+        "coverage": coverage,
+        "eeg_condition_psd": eeg_condition_psd,
         "counts": {
             "n_evaluations": len(evaluations),
             "n_aggregate_rows": len(aggregate_rows),
+            "n_live_confusion_pngs": int(live_confusion_png_count),
         },
     }
     results_json.parent.mkdir(parents=True, exist_ok=True)
@@ -2092,6 +2905,9 @@ def main() -> None:
         aggregate_rows=aggregate_rows,
         best_rows=best_rows,
         warning_counts_total=warning_counts_total,
+        coverage=coverage,
+        skip_counts=skip_counts_total,
+        eeg_condition_psd=eeg_condition_psd,
     )
     summary_md.parent.mkdir(parents=True, exist_ok=True)
     summary_md.write_text(summary_text, encoding="utf-8")
@@ -2101,11 +2917,30 @@ def main() -> None:
         "summary_md": str(summary_md),
         "n_evaluations": len(evaluations),
         "n_aggregate_rows": len(aggregate_rows),
+        "n_live_confusion_pngs": int(live_confusion_png_count),
+        "live_confusion_png_dir": str(live_confusion_png_dir),
         "best_models": best_rows,
         "warning_counts_total": warning_counts_total,
+        "skip_counts_total": skip_counts_total,
+        "coverage": coverage,
+        "eeg_condition_psd": eeg_condition_psd,
     }
     (run_dir / "run_meta.json").write_text(json.dumps(run_meta, indent=2) + "\n", encoding="utf-8")
     (run_dir / "run_config.json").write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+
+    missing_pairs = list(coverage.get("missing_pairs", []))
+    if missing_pairs:
+        print("  Coverage gaps detected:")
+        for pair in missing_pairs:
+            print(
+                f"    - dataset={pair['dataset']} protocol={pair['protocol']} "
+                f"aggregate_rows={int(pair.get('aggregate_rows', 0))}"
+            )
+        if not args.allow_incomplete_coverage:
+            raise RuntimeError(
+                "Stage 6 coverage check failed: missing dataset+protocol aggregate rows. "
+                "Use --allow-incomplete-coverage or set --min-aggregate-rows-per-dataset-protocol 0 to bypass."
+            )
 
     print("Stage 6 complete.")
     print(f"  Evaluations: {len(evaluations)}")
@@ -2114,9 +2949,21 @@ def main() -> None:
     print(f"  Summary Markdown: {summary_md}")
     print(f"  Model run dir: {run_dir}")
     print(f"  Class scenario: {class_scenario['name']} ({len(labels)} classes)")
+    if eeg_condition_psd is not None:
+        print(f"  EEG condition PSD manifest: {eeg_condition_psd.get('manifest_json', '')}")
+    if args.live_confusion_pngs:
+        print(f"  Live confusion PNGs written: {live_confusion_png_count}")
+        print(f"  Live confusion PNG dir: {live_confusion_png_dir}")
+    print(
+        "  Coverage: "
+        f"missing_pairs={len(missing_pairs)} "
+        f"(min_aggregate_rows_per_pair={coverage['min_aggregate_rows_per_pair']})"
+    )
     print(f"  Elapsed seconds: {time.time() - stage_started:.1f}")
     if warning_counts_total:
         print(f"  Captured warnings: {sum(warning_counts_total.values())}")
+    if skip_counts_total:
+        print(f"  Skip events: {sum(skip_counts_total.values())}")
 
 
 if __name__ == "__main__":

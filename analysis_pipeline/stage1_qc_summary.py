@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean, median
-from typing import Any
+from typing import Any, Callable
 
 import matplotlib
 import numpy as np
@@ -64,6 +64,36 @@ def _format_float(value: float | None, decimals: int = 6) -> str:
     return f"{value:.{decimals}f}"
 
 
+def _bool_text(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _ordered_unique(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def _effective_inclusion_flag(analysis_included: str, rejected: bool) -> str:
+    if analysis_included == "false":
+        return "false"
+    if rejected:
+        return "false"
+    return analysis_included
+
+
+def _safe_percent(numerator: float, denominator: float) -> float | None:
+    if denominator <= 0:
+        return None
+    return 100.0 * float(numerator) / float(denominator)
+
+
 def _open_text(path: Path):
     if path.suffix == ".gz":
         return gzip.open(path, "rt", encoding="utf-8", newline="")
@@ -106,6 +136,10 @@ def _reports_dir() -> Path:
     return _analysis_root() / "reports"
 
 
+def _default_participant_bids_sample_drop_summary_csv_path() -> Path:
+    return _reports_dir() / "participant_bids_sample_drop_summary.csv"
+
+
 def _read_participants(participants_tsv: Path) -> dict[str, dict[str, str]]:
     if not participants_tsv.exists():
         return {}
@@ -146,12 +180,17 @@ def _count_table_rows(path: Path) -> int:
         return sum(1 for _ in reader)
 
 
-def _estimate_eeg_duration_s(paths: SubjectPaths) -> float | None:
+def _summarize_eeg_recording(paths: SubjectPaths) -> dict[str, float | int | None]:
+    out: dict[str, float | int | None] = {
+        "eeg_samples": None,
+        "eeg_sampling_frequency_hz": None,
+        "eeg_duration_s": None,
+    }
     if not paths.eeg_vhdr.exists():
-        return None
+        return out
     eeg_binary = paths.eeg_vhdr.with_suffix(".eeg")
     if not eeg_binary.exists():
-        return None
+        return out
     file_size = eeg_binary.stat().st_size
 
     n_channels: int | None = None
@@ -190,10 +229,15 @@ def _estimate_eeg_duration_s(paths: SubjectPaths) -> float | None:
                     break
 
     if n_channels is None or sfreq is None or sfreq <= 0:
-        return None
+        return out
 
     samples = file_size / (n_channels * 4.0)
-    return samples / sfreq
+    if not math.isfinite(samples) or samples <= 0:
+        return out
+    out["eeg_samples"] = int(round(samples))
+    out["eeg_sampling_frequency_hz"] = float(sfreq)
+    out["eeg_duration_s"] = float(samples / sfreq)
+    return out
 
 
 def _load_ecg_series(ecg_tsv: Path) -> tuple[np.ndarray, np.ndarray]:
@@ -664,6 +708,18 @@ def _subject_rows_to_table_rows(
         "dropped_samples_main_trials",
         "dropped_samples_main_trials_per_trial_mean",
         "dropped_samples_main_trials_per_trial_p95",
+        "dropped_samples_main_trials_mean_threshold",
+        "dropped_samples_main_trials_p95_threshold",
+        "dropped_samples_main_trials_mean_exceeds_threshold",
+        "dropped_samples_main_trials_p95_exceeds_threshold",
+        "dropped_samples_main_trials_mean_threshold_eeg",
+        "dropped_samples_main_trials_p95_threshold_eeg",
+        "dropped_samples_main_trials_mean_exceeds_threshold_eeg",
+        "dropped_samples_main_trials_p95_exceeds_threshold_eeg",
+        "dropped_samples_main_trials_mean_threshold_ecg",
+        "dropped_samples_main_trials_p95_threshold_ecg",
+        "dropped_samples_main_trials_mean_exceeds_threshold_ecg",
+        "dropped_samples_main_trials_p95_exceeds_threshold_ecg",
         "response_time_main_mean_s",
         "response_time_main_median_s",
         "response_time_main_p95_s",
@@ -674,6 +730,25 @@ def _subject_rows_to_table_rows(
         "pupil_pct_nonpositive_size",
         "anomaly_count",
         "anomalies",
+        "qc_flagged",
+        "qc_rejected",
+        "qc_rejected_any_modality",
+        "qc_rejected_all_modalities",
+        "qc_rejected_eeg",
+        "qc_rejected_ecg",
+        "qc_rejected_pupil",
+        "qc_reason_count",
+        "qc_rejection_reasons",
+        "qc_reason_count_eeg",
+        "qc_reason_count_ecg",
+        "qc_reason_count_pupil",
+        "qc_rejection_reasons_eeg",
+        "qc_rejection_reasons_ecg",
+        "qc_rejection_reasons_pupil",
+        "analysis_included_effective",
+        "analysis_included_effective_eeg",
+        "analysis_included_effective_ecg",
+        "analysis_included_effective_pupil",
     ]
     out: list[dict[str, str]] = []
     for row in subject_rows:
@@ -735,6 +810,42 @@ def _subject_rows_to_table_rows(
                 "dropped_samples_main_trials_per_trial_p95": _format_float(
                     row["dropped_samples_main_trials_per_trial_p95"], 3
                 ),
+                "dropped_samples_main_trials_mean_threshold": _format_float(
+                    row["dropped_samples_main_trials_mean_threshold"], 3
+                ),
+                "dropped_samples_main_trials_p95_threshold": _format_float(
+                    row["dropped_samples_main_trials_p95_threshold"], 3
+                ),
+                "dropped_samples_main_trials_mean_exceeds_threshold": "true"
+                if row["dropped_samples_main_trials_mean_exceeds_threshold"]
+                else "false",
+                "dropped_samples_main_trials_p95_exceeds_threshold": "true"
+                if row["dropped_samples_main_trials_p95_exceeds_threshold"]
+                else "false",
+                "dropped_samples_main_trials_mean_threshold_eeg": _format_float(
+                    row["dropped_samples_main_trials_mean_threshold_eeg"], 3
+                ),
+                "dropped_samples_main_trials_p95_threshold_eeg": _format_float(
+                    row["dropped_samples_main_trials_p95_threshold_eeg"], 3
+                ),
+                "dropped_samples_main_trials_mean_exceeds_threshold_eeg": "true"
+                if row["dropped_samples_main_trials_mean_exceeds_threshold_eeg"]
+                else "false",
+                "dropped_samples_main_trials_p95_exceeds_threshold_eeg": "true"
+                if row["dropped_samples_main_trials_p95_exceeds_threshold_eeg"]
+                else "false",
+                "dropped_samples_main_trials_mean_threshold_ecg": _format_float(
+                    row["dropped_samples_main_trials_mean_threshold_ecg"], 3
+                ),
+                "dropped_samples_main_trials_p95_threshold_ecg": _format_float(
+                    row["dropped_samples_main_trials_p95_threshold_ecg"], 3
+                ),
+                "dropped_samples_main_trials_mean_exceeds_threshold_ecg": "true"
+                if row["dropped_samples_main_trials_mean_exceeds_threshold_ecg"]
+                else "false",
+                "dropped_samples_main_trials_p95_exceeds_threshold_ecg": "true"
+                if row["dropped_samples_main_trials_p95_exceeds_threshold_ecg"]
+                else "false",
                 "response_time_main_mean_s": _format_float(row["response_time_main_mean_s"], 3),
                 "response_time_main_median_s": _format_float(row["response_time_main_median_s"], 3),
                 "response_time_main_p95_s": _format_float(row["response_time_main_p95_s"], 3),
@@ -745,6 +856,99 @@ def _subject_rows_to_table_rows(
                 "pupil_pct_nonpositive_size": _format_float(row["pupil_pct_nonpositive_size"], 2),
                 "anomaly_count": str(len(row["anomalies"])),
                 "anomalies": " | ".join(row["anomalies"]),
+                "qc_flagged": _bool_text(row["qc_flagged"]),
+                "qc_rejected": _bool_text(row["qc_rejected"]),
+                "qc_rejected_any_modality": _bool_text(row["qc_rejected_any_modality"]),
+                "qc_rejected_all_modalities": _bool_text(row["qc_rejected_all_modalities"]),
+                "qc_rejected_eeg": _bool_text(row["qc_rejected_eeg"]),
+                "qc_rejected_ecg": _bool_text(row["qc_rejected_ecg"]),
+                "qc_rejected_pupil": _bool_text(row["qc_rejected_pupil"]),
+                "qc_reason_count": str(row["qc_reason_count"]),
+                "qc_rejection_reasons": " | ".join(row["qc_rejection_reasons"]),
+                "qc_reason_count_eeg": str(row["qc_reason_count_eeg"]),
+                "qc_reason_count_ecg": str(row["qc_reason_count_ecg"]),
+                "qc_reason_count_pupil": str(row["qc_reason_count_pupil"]),
+                "qc_rejection_reasons_eeg": " | ".join(row["qc_rejection_reasons_eeg"]),
+                "qc_rejection_reasons_ecg": " | ".join(row["qc_rejection_reasons_ecg"]),
+                "qc_rejection_reasons_pupil": " | ".join(row["qc_rejection_reasons_pupil"]),
+                "analysis_included_effective": row["analysis_included_effective"],
+                "analysis_included_effective_eeg": row["analysis_included_effective_eeg"],
+                "analysis_included_effective_ecg": row["analysis_included_effective_ecg"],
+                "analysis_included_effective_pupil": row["analysis_included_effective_pupil"],
+            }
+        )
+    return out
+
+
+def _subject_rows_to_bids_sample_drop_summary_rows(
+    subject_rows: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    fields = [
+        "participant_id",
+        "analysis_included",
+        "has_eeg",
+        "eeg_sampling_frequency_hz",
+        "eeg_recorded_samples",
+        "eeg_recorded_duration_s",
+        "eeg_dropped_samples_total_events",
+        "eeg_total_samples_including_drops",
+        "eeg_dropped_sample_percent",
+        "has_ecg",
+        "ecg_sampling_frequency_hz",
+        "ecg_recorded_samples",
+        "ecg_recorded_duration_s",
+        "ecg_dropped_samples_total_events",
+        "ecg_total_samples_including_drops",
+        "ecg_dropped_sample_percent",
+        "has_pupil",
+        "pupil_recorded_samples",
+        "events_rows",
+        "trial_rows_total",
+        "trial_rows_main",
+        "trial_rows_tutorial",
+        "dropped_samples_total_events",
+        "dropped_samples_main_trials",
+    ]
+    out: list[dict[str, str]] = []
+    for row in subject_rows:
+        dropped_total = int(row["dropped_samples_total_events"] or 0)
+        eeg_recorded_samples = int(row.get("eeg_samples") or 0)
+        ecg_recorded_samples = int(row["ecg_samples"] or 0)
+        pupil_recorded_samples = int(row["pupil_samples"] or 0)
+        eeg_total_with_drops = eeg_recorded_samples + dropped_total if eeg_recorded_samples > 0 else 0
+        ecg_total_with_drops = ecg_recorded_samples + dropped_total if ecg_recorded_samples > 0 else 0
+        out.append(
+            {
+                "participant_id": row["participant_id"],
+                "analysis_included": row["analysis_included"],
+                "has_eeg": "true" if row["has_eeg"] else "false",
+                "eeg_sampling_frequency_hz": _format_float(row.get("eeg_sampling_frequency_hz"), 3),
+                "eeg_recorded_samples": str(eeg_recorded_samples),
+                "eeg_recorded_duration_s": _format_float(row.get("eeg_duration_s"), 3),
+                "eeg_dropped_samples_total_events": str(dropped_total if eeg_recorded_samples > 0 else 0),
+                "eeg_total_samples_including_drops": str(eeg_total_with_drops),
+                "eeg_dropped_sample_percent": _format_float(
+                    _safe_percent(float(dropped_total), float(eeg_total_with_drops)),
+                    3,
+                ),
+                "has_ecg": "true" if row["has_ecg"] else "false",
+                "ecg_sampling_frequency_hz": _format_float(row["ecg_sampling_frequency_hz"], 3),
+                "ecg_recorded_samples": str(ecg_recorded_samples),
+                "ecg_recorded_duration_s": _format_float(row["ecg_duration_s"], 3),
+                "ecg_dropped_samples_total_events": str(dropped_total if ecg_recorded_samples > 0 else 0),
+                "ecg_total_samples_including_drops": str(ecg_total_with_drops),
+                "ecg_dropped_sample_percent": _format_float(
+                    _safe_percent(float(dropped_total), float(ecg_total_with_drops)),
+                    3,
+                ),
+                "has_pupil": "true" if row["has_pupil"] else "false",
+                "pupil_recorded_samples": str(pupil_recorded_samples),
+                "events_rows": str(row["events_rows"]),
+                "trial_rows_total": str(row["trial_rows_total"]),
+                "trial_rows_main": str(row["trial_rows_main"]),
+                "trial_rows_tutorial": str(row["trial_rows_tutorial"]),
+                "dropped_samples_total_events": str(dropped_total),
+                "dropped_samples_main_trials": str(row["dropped_samples_main_trials"]),
             }
         )
     return out
@@ -773,15 +977,34 @@ def _write_tsv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
+def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        with path.open("w", encoding="utf-8", newline="") as f:
+            f.write("")
+        return
+    with path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.DictWriter(
+            f, fieldnames=list(rows[0].keys()), delimiter=",", lineterminator="\n"
+        )
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _subject_rows_in_order(
+    subject_rows: list[dict[str, Any]],
+    predicate: Callable[[dict[str, Any]], bool] | None = None,
+) -> list[dict[str, Any]]:
+    if predicate is None:
+        return list(subject_rows)
+    return [row for row in subject_rows if predicate(row)]
+
+
 def _plot_dropped_samples(subject_rows: list[dict[str, Any]], fig_dir: Path) -> Path:
     fig_dir.mkdir(parents=True, exist_ok=True)
-    sorted_rows = sorted(
-        subject_rows,
-        key=lambda row: row["dropped_samples_main_trials"],
-        reverse=True,
-    )
-    labels = [row["participant_id"] for row in sorted_rows]
-    values = [row["dropped_samples_main_trials"] for row in sorted_rows]
+    ordered_rows = _subject_rows_in_order(subject_rows)
+    labels = [row["participant_id"] for row in ordered_rows]
+    values = [row["dropped_samples_main_trials"] for row in ordered_rows]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(labels, values, color="#2F6C8F")
@@ -798,12 +1021,64 @@ def _plot_dropped_samples(subject_rows: list[dict[str, Any]], fig_dir: Path) -> 
     return out_path
 
 
+def _plot_dropped_sample_flags_by_modality(
+    subject_rows: list[dict[str, Any]],
+    fig_dir: Path,
+) -> Path:
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    n_subjects = len(subject_rows)
+    eeg_flagged = [
+        row["participant_id"]
+        for row in subject_rows
+        if row["dropped_samples_main_trials_mean_exceeds_threshold_eeg"]
+        or row["dropped_samples_main_trials_p95_exceeds_threshold_eeg"]
+    ]
+    ecg_flagged = [
+        row["participant_id"]
+        for row in subject_rows
+        if row["dropped_samples_main_trials_mean_exceeds_threshold_ecg"]
+        or row["dropped_samples_main_trials_p95_exceeds_threshold_ecg"]
+    ]
+
+    panels = [
+        ("EEG", eeg_flagged, "#2F6C8F"),
+        ("ECG", ecg_flagged, "#B15B5B"),
+    ]
+    max_lines = max(1, len(eeg_flagged), len(ecg_flagged))
+    fig, axes = plt.subplots(1, 2, figsize=(10, max(3.8, 1.4 + 0.33 * max_lines)))
+    fig.suptitle("Subjects Flagged by Missing-Sample Thresholds")
+
+    for ax, (label, subjects, color) in zip(axes, panels):
+        ax.axis("off")
+        ax.set_title(f"{label}: {len(subjects)}/{n_subjects}")
+        text = "\n".join(subjects) if subjects else "None"
+        ax.text(
+            0.03,
+            0.97,
+            text,
+            ha="left",
+            va="top",
+            fontsize=10,
+            family="monospace",
+            color=color,
+            transform=ax.transAxes,
+        )
+    fig.tight_layout(rect=[0.0, 0.0, 1.0, 0.95])
+
+    out_path = fig_dir / "dropped_samples_flagged_subjects_eeg_ecg.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
+
+
 def _plot_pupil_confidence(subject_rows: list[dict[str, Any]], fig_dir: Path) -> Path:
     fig_dir.mkdir(parents=True, exist_ok=True)
-    filtered = [row for row in subject_rows if row["pupil_mean_confidence"] is not None]
-    sorted_rows = sorted(filtered, key=lambda row: row["pupil_mean_confidence"])
-    labels = [row["participant_id"] for row in sorted_rows]
-    values = [row["pupil_mean_confidence"] for row in sorted_rows]
+    ordered_rows = _subject_rows_in_order(
+        subject_rows,
+        predicate=lambda row: row["pupil_mean_confidence"] is not None,
+    )
+    labels = [row["participant_id"] for row in ordered_rows]
+    values = [row["pupil_mean_confidence"] for row in ordered_rows]
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.bar(labels, values, color="#4E8B31")
@@ -826,13 +1101,15 @@ def _plot_pupil_confidence(subject_rows: list[dict[str, Any]], fig_dir: Path) ->
 
 def _plot_hr_mean(subject_rows: list[dict[str, Any]], fig_dir: Path) -> Path:
     fig_dir.mkdir(parents=True, exist_ok=True)
-    filtered = [row for row in subject_rows if row["hr_mean_bpm"] is not None]
-    sorted_rows = sorted(filtered, key=lambda row: row["hr_mean_bpm"])
-    labels = [row["participant_id"] for row in sorted_rows]
-    values = [row["hr_mean_bpm"] for row in sorted_rows]
+    ordered_rows = _subject_rows_in_order(
+        subject_rows,
+        predicate=lambda row: row["hr_mean_bpm"] is not None,
+    )
+    labels = [row["participant_id"] for row in ordered_rows]
+    values = [row["hr_mean_bpm"] for row in ordered_rows]
     colors = [
         "#2F6C8F" if row["ecg_quality_flag"] == "pass" else "#B33A3A"
-        for row in sorted_rows
+        for row in ordered_rows
     ]
 
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -855,14 +1132,14 @@ def _plot_hr_mean(subject_rows: list[dict[str, Any]], fig_dir: Path) -> Path:
 
 def _plot_hr_baseline_vs_task(subject_rows: list[dict[str, Any]], fig_dir: Path) -> Path:
     fig_dir.mkdir(parents=True, exist_ok=True)
-    filtered = [
-        row
-        for row in sorted(subject_rows, key=lambda x: x["participant_id"])
-        if row["baseline_hr_mean_bpm"] is not None and row["task_hr_mean_bpm"] is not None
-    ]
-    labels = [row["participant_id"] for row in filtered]
-    baseline = [row["baseline_hr_mean_bpm"] for row in filtered]
-    task = [row["task_hr_mean_bpm"] for row in filtered]
+    ordered_rows = _subject_rows_in_order(
+        subject_rows,
+        predicate=lambda row: row["baseline_hr_mean_bpm"] is not None
+        and row["task_hr_mean_bpm"] is not None,
+    )
+    labels = [row["participant_id"] for row in ordered_rows]
+    baseline = [row["baseline_hr_mean_bpm"] for row in ordered_rows]
+    task = [row["task_hr_mean_bpm"] for row in ordered_rows]
 
     x = np.arange(len(labels))
     width = 0.42
@@ -885,12 +1162,12 @@ def _plot_hr_baseline_vs_task(subject_rows: list[dict[str, Any]], fig_dir: Path)
 
 def _plot_modality_coverage(subject_rows: list[dict[str, Any]], fig_dir: Path) -> Path:
     fig_dir.mkdir(parents=True, exist_ok=True)
-    sorted_rows = sorted(subject_rows, key=lambda row: row["participant_id"])
-    labels = [row["participant_id"] for row in sorted_rows]
+    ordered_rows = _subject_rows_in_order(subject_rows)
+    labels = [row["participant_id"] for row in ordered_rows]
     matrix = [
-        [1 if row["has_eeg"] else 0 for row in sorted_rows],
-        [1 if row["has_ecg"] else 0 for row in sorted_rows],
-        [1 if row["has_pupil"] else 0 for row in sorted_rows],
+        [1 if row["has_eeg"] else 0 for row in ordered_rows],
+        [1 if row["has_ecg"] else 0 for row in ordered_rows],
+        [1 if row["has_pupil"] else 0 for row in ordered_rows],
     ]
 
     fig, ax = plt.subplots(figsize=(10, 3))
@@ -940,14 +1217,61 @@ def main() -> None:
         help="Output dataset QC summary JSON. Default: analysis_pipeline/reports/qc_dataset_summary.json",
     )
     parser.add_argument(
+        "--participant-bids-sample-drop-summary-csv",
+        default=None,
+        help=(
+            "Output compact per-participant raw-BIDS sample/drop summary CSV. "
+            "Default: analysis_pipeline/reports/participant_bids_sample_drop_summary.csv"
+        ),
+    )
+    parser.add_argument(
         "--fig-dir",
         default=None,
         help="Output directory for quick QC figures. Default: analysis_pipeline/reports/figures",
     )
     parser.add_argument(
+        "--max-dropped-samples-main-trial-mean",
+        type=float,
+        default=None,
+        help=(
+            "Optional Stage 1 EEG dropped-sample proxy threshold: "
+            "flag anomaly when subject mean dropped_samples_trial across main trials exceeds this value."
+        ),
+    )
+    parser.add_argument(
+        "--max-dropped-samples-main-trial-p95",
+        type=float,
+        default=None,
+        help=(
+            "Optional Stage 1 EEG dropped-sample proxy threshold: "
+            "flag anomaly when subject p95 dropped_samples_trial across main trials exceeds this value."
+        ),
+    )
+    parser.add_argument(
+        "--max-dropped-samples-main-trial-mean-ecg",
+        type=float,
+        default=None,
+        help=(
+            "Optional Stage 1 ECG dropped-sample proxy threshold: "
+            "flag anomaly when subject mean dropped_samples_trial across main trials exceeds this value."
+        ),
+    )
+    parser.add_argument(
+        "--max-dropped-samples-main-trial-p95-ecg",
+        type=float,
+        default=None,
+        help=(
+            "Optional Stage 1 ECG dropped-sample proxy threshold: "
+            "flag anomaly when subject p95 dropped_samples_trial across main trials exceeds this value."
+        ),
+    )
+    parser.add_argument(
         "--strict",
         action="store_true",
-        help="Exit with non-zero code if any subject anomalies are detected.",
+        help=(
+            "Mark subjects with any QC anomalies as rejected in outputs and continue so "
+            "downstream stages can analyze only the carried-forward set."
+        ),
     )
     args = parser.parse_args()
 
@@ -955,6 +1279,26 @@ def main() -> None:
     if not bids_root.exists():
         raise FileNotFoundError(bids_root)
     task = args.task or _task_from_bids_root(bids_root)
+    if (
+        args.max_dropped_samples_main_trial_mean is not None
+        and args.max_dropped_samples_main_trial_mean < 0
+    ):
+        raise ValueError("--max-dropped-samples-main-trial-mean must be >= 0.")
+    if (
+        args.max_dropped_samples_main_trial_p95 is not None
+        and args.max_dropped_samples_main_trial_p95 < 0
+    ):
+        raise ValueError("--max-dropped-samples-main-trial-p95 must be >= 0.")
+    if (
+        args.max_dropped_samples_main_trial_mean_ecg is not None
+        and args.max_dropped_samples_main_trial_mean_ecg < 0
+    ):
+        raise ValueError("--max-dropped-samples-main-trial-mean-ecg must be >= 0.")
+    if (
+        args.max_dropped_samples_main_trial_p95_ecg is not None
+        and args.max_dropped_samples_main_trial_p95_ecg < 0
+    ):
+        raise ValueError("--max-dropped-samples-main-trial-p95-ecg must be >= 0.")
 
     reports_dir = _reports_dir()
     subject_table_path = (
@@ -966,6 +1310,11 @@ def main() -> None:
         Path(args.out_summary_json).resolve()
         if args.out_summary_json
         else reports_dir / "qc_dataset_summary.json"
+    )
+    participant_bids_sample_drop_summary_csv_path = (
+        Path(args.participant_bids_sample_drop_summary_csv).resolve()
+        if args.participant_bids_sample_drop_summary_csv
+        else _default_participant_bids_sample_drop_summary_csv_path()
     )
     fig_dir = (
         Path(args.fig_dir).resolve() if args.fig_dir else reports_dir / "figures"
@@ -1005,15 +1354,19 @@ def main() -> None:
         if analysis_included not in ("true", "false"):
             analysis_included = "n/a"
 
-        has_eeg = paths.eeg_vhdr.exists() and paths.events_tsv.exists()
+        has_events = paths.events_tsv.exists()
+        has_eeg_recording = paths.eeg_vhdr.exists()
+        has_ecg_sidecar = paths.ecg_json.exists()
+        has_pupil_sidecar = paths.pupil_json.exists()
+        has_eeg = has_eeg_recording and has_events
         has_ecg = paths.ecg_tsv.exists()
-        has_pupil = paths.pupil_tsv.exists() and paths.pupil_json.exists()
+        has_pupil = paths.pupil_tsv.exists() and has_pupil_sidecar
 
         events_summary = _read_events_summary(paths.events_tsv)
         marker_onsets = _read_marker_onsets(paths.events_tsv)
         events_rows = _count_table_rows(paths.events_tsv)
         ecg_quality, hr_times, hr_values = _summarize_ecg_quality(paths.ecg_tsv, paths.ecg_json)
-        eeg_duration_s = _estimate_eeg_duration_s(paths)
+        eeg_summary = _summarize_eeg_recording(paths)
         pupil_quality = _summarize_pupil_quality(paths.pupil_tsv, paths.pupil_json)
         subject_trials = trials_by_subject.get(subject, [])
 
@@ -1024,6 +1377,8 @@ def main() -> None:
             for row in main_trial_rows
             if _as_float(row.get("dropped_samples_trial")) is not None
         ]
+        dropped_main_mean = mean(dropped_main) if dropped_main else None
+        dropped_main_p95 = _percentile(dropped_main, 0.95)
         rt_main = [
             _as_float(row.get("response_time_s"))
             for row in main_trial_rows
@@ -1062,52 +1417,151 @@ def main() -> None:
         if baseline_hr["mean_bpm"] is not None and task_hr["mean_bpm"] is not None:
             hr_delta = float(task_hr["mean_bpm"] - baseline_hr["mean_bpm"])
 
-        anomalies: list[str] = []
-        if not has_eeg:
-            anomalies.append("Missing EEG or events files.")
-        if not has_ecg:
-            anomalies.append("Missing ECG physio file.")
+        global_qc_reasons: list[str] = []
+        eeg_qc_reasons_local: list[str] = []
+        ecg_qc_reasons_local: list[str] = []
+        pupil_qc_reasons_local: list[str] = []
+
+        if not has_events:
+            global_qc_reasons.append("Missing events TSV.")
+        if not has_eeg_recording:
+            eeg_qc_reasons_local.append("Missing EEG recording file.")
+        if not has_ecg or not has_ecg_sidecar:
+            ecg_qc_reasons_local.append("Missing ECG physio TSV/JSON.")
         elif ecg_quality["ecg_quality_flag"] in ("warn", "fail"):
-            anomalies.append(
+            ecg_qc_reasons_local.append(
                 f"ECG {ecg_quality['ecg_quality_flag']}: {ecg_quality['ecg_quality_note']}"
             )
-        if not has_pupil:
-            anomalies.append("Missing pupil TSV/JSON.")
+        if not has_pupil or not has_pupil_sidecar:
+            pupil_qc_reasons_local.append("Missing pupil TSV/JSON.")
 
         if len(subject_trials) != 70:
-            anomalies.append(f"Expected 70 trial rows, got {len(subject_trials)}.")
+            global_qc_reasons.append(f"Expected 70 trial rows, got {len(subject_trials)}.")
         if len(main_trial_rows) != 63:
-            anomalies.append(f"Expected 63 main trial rows, got {len(main_trial_rows)}.")
+            global_qc_reasons.append(f"Expected 63 main trial rows, got {len(main_trial_rows)}.")
         if len(tutorial_trial_rows) != 7:
-            anomalies.append(f"Expected 7 tutorial trial rows, got {len(tutorial_trial_rows)}.")
+            global_qc_reasons.append(f"Expected 7 tutorial trial rows, got {len(tutorial_trial_rows)}.")
 
         if events_summary["cue_markers"] != 70:
-            anomalies.append(f"Expected 70 cue markers, got {events_summary['cue_markers']}.")
+            global_qc_reasons.append(f"Expected 70 cue markers, got {events_summary['cue_markers']}.")
         if events_summary["outcome_markers"] != 70:
-            anomalies.append(f"Expected 70 outcome markers, got {events_summary['outcome_markers']}.")
+            global_qc_reasons.append(f"Expected 70 outcome markers, got {events_summary['outcome_markers']}.")
         if events_summary["started_arithmetic_markers"] != 1:
-            anomalies.append(
+            global_qc_reasons.append(
                 "Unexpected started_arithmetic marker count: "
                 f"{events_summary['started_arithmetic_markers']}."
             )
         if events_summary["finished_arithmetic_markers"] != 1:
-            anomalies.append(
+            global_qc_reasons.append(
                 "Unexpected finished_arithmetic marker count: "
                 f"{events_summary['finished_arithmetic_markers']}."
             )
 
         if pupil_quality["pupil_mean_confidence"] is not None and pupil_quality["pupil_mean_confidence"] < 0.6:
-            anomalies.append(
+            pupil_qc_reasons_local.append(
                 f"Low pupil mean confidence ({pupil_quality['pupil_mean_confidence']:.3f})."
             )
+        dropped_mean_exceeds_eeg = False
+        dropped_p95_exceeds_eeg = False
+        dropped_mean_exceeds_ecg = False
+        dropped_p95_exceeds_ecg = False
+        if args.max_dropped_samples_main_trial_mean is not None:
+            if dropped_main_mean is None:
+                eeg_qc_reasons_local.append(
+                    "No dropped_samples_trial values available for mean-threshold EEG dropped-sample check."
+                )
+            elif dropped_main_mean > args.max_dropped_samples_main_trial_mean:
+                dropped_mean_exceeds_eeg = True
+                eeg_qc_reasons_local.append(
+                    "High mean dropped samples in main trials "
+                    f"({dropped_main_mean:.3f} > {args.max_dropped_samples_main_trial_mean:.3f})."
+                )
+        if args.max_dropped_samples_main_trial_p95 is not None:
+            if dropped_main_p95 is None:
+                eeg_qc_reasons_local.append(
+                    "No dropped_samples_trial values available for p95-threshold EEG dropped-sample check."
+                )
+            elif dropped_main_p95 > args.max_dropped_samples_main_trial_p95:
+                dropped_p95_exceeds_eeg = True
+                eeg_qc_reasons_local.append(
+                    "High p95 dropped samples in main trials "
+                    f"({dropped_main_p95:.3f} > {args.max_dropped_samples_main_trial_p95:.3f})."
+                )
+        if args.max_dropped_samples_main_trial_mean_ecg is not None:
+            if dropped_main_mean is None:
+                ecg_qc_reasons_local.append(
+                    "No dropped_samples_trial values available for mean-threshold ECG dropped-sample check."
+                )
+            elif dropped_main_mean > args.max_dropped_samples_main_trial_mean_ecg:
+                dropped_mean_exceeds_ecg = True
+                ecg_qc_reasons_local.append(
+                    "High mean dropped samples in main trials for ECG "
+                    f"({dropped_main_mean:.3f} > {args.max_dropped_samples_main_trial_mean_ecg:.3f})."
+                )
+        if args.max_dropped_samples_main_trial_p95_ecg is not None:
+            if dropped_main_p95 is None:
+                ecg_qc_reasons_local.append(
+                    "No dropped_samples_trial values available for p95-threshold ECG dropped-sample check."
+                )
+            elif dropped_main_p95 > args.max_dropped_samples_main_trial_p95_ecg:
+                dropped_p95_exceeds_ecg = True
+                ecg_qc_reasons_local.append(
+                    "High p95 dropped samples in main trials for ECG "
+                    f"({dropped_main_p95:.3f} > {args.max_dropped_samples_main_trial_p95_ecg:.3f})."
+                )
+
+        eeg_qc_reasons = _ordered_unique(global_qc_reasons + eeg_qc_reasons_local)
+        ecg_qc_reasons = _ordered_unique(global_qc_reasons + ecg_qc_reasons_local)
+        pupil_qc_reasons = _ordered_unique(global_qc_reasons + pupil_qc_reasons_local)
+        anomalies = _ordered_unique(
+            global_qc_reasons + eeg_qc_reasons_local + ecg_qc_reasons_local + pupil_qc_reasons_local
+        )
+
+        qc_flagged = bool(anomalies)
+        qc_rejected_eeg = bool(args.strict and eeg_qc_reasons and analysis_included != "false")
+        qc_rejected_ecg = bool(args.strict and ecg_qc_reasons and analysis_included != "false")
+        qc_rejected_pupil = bool(args.strict and pupil_qc_reasons and analysis_included != "false")
+        qc_rejected_any_modality = bool(
+            qc_rejected_eeg or qc_rejected_ecg or qc_rejected_pupil
+        )
+        qc_rejected_all_modalities = bool(
+            qc_rejected_eeg and qc_rejected_ecg and qc_rejected_pupil
+        )
+        qc_rejected = qc_rejected_all_modalities
+
+        analysis_included_effective_eeg = _effective_inclusion_flag(
+            analysis_included, qc_rejected_eeg
+        )
+        analysis_included_effective_ecg = _effective_inclusion_flag(
+            analysis_included, qc_rejected_ecg
+        )
+        analysis_included_effective_pupil = _effective_inclusion_flag(
+            analysis_included, qc_rejected_pupil
+        )
+        if analysis_included == "false":
+            analysis_included_effective = "false"
+        elif (
+            analysis_included_effective_eeg == "true"
+            or analysis_included_effective_ecg == "true"
+            or analysis_included_effective_pupil == "true"
+        ):
+            analysis_included_effective = "true"
+        else:
+            analysis_included_effective = "false"
 
         subject_row: dict[str, Any] = {
             "participant_id": subject,
             "analysis_included": analysis_included,
+            "analysis_included_effective": analysis_included_effective,
+            "analysis_included_effective_eeg": analysis_included_effective_eeg,
+            "analysis_included_effective_ecg": analysis_included_effective_ecg,
+            "analysis_included_effective_pupil": analysis_included_effective_pupil,
             "has_eeg": has_eeg,
             "has_ecg": has_ecg,
             "has_pupil": has_pupil,
-            "eeg_duration_s": eeg_duration_s,
+            "eeg_samples": int(eeg_summary["eeg_samples"] or 0),
+            "eeg_sampling_frequency_hz": eeg_summary["eeg_sampling_frequency_hz"],
+            "eeg_duration_s": eeg_summary["eeg_duration_s"],
             "ecg_samples": int(ecg_quality["ecg_samples"] or 0),
             "ecg_sampling_frequency_hz": ecg_quality["ecg_sampling_frequency_hz"],
             "ecg_duration_s": ecg_quality["ecg_duration_s"],
@@ -1148,8 +1602,20 @@ def main() -> None:
             "finished_arithmetic_markers": events_summary["finished_arithmetic_markers"],
             "dropped_samples_total_events": events_summary["dropped_samples_total"],
             "dropped_samples_main_trials": int(sum(dropped_main)) if dropped_main else 0,
-            "dropped_samples_main_trials_per_trial_mean": mean(dropped_main) if dropped_main else None,
-            "dropped_samples_main_trials_per_trial_p95": _percentile(dropped_main, 0.95),
+            "dropped_samples_main_trials_per_trial_mean": dropped_main_mean,
+            "dropped_samples_main_trials_per_trial_p95": dropped_main_p95,
+            "dropped_samples_main_trials_mean_threshold": args.max_dropped_samples_main_trial_mean,
+            "dropped_samples_main_trials_p95_threshold": args.max_dropped_samples_main_trial_p95,
+            "dropped_samples_main_trials_mean_exceeds_threshold": dropped_mean_exceeds_eeg,
+            "dropped_samples_main_trials_p95_exceeds_threshold": dropped_p95_exceeds_eeg,
+            "dropped_samples_main_trials_mean_threshold_eeg": args.max_dropped_samples_main_trial_mean,
+            "dropped_samples_main_trials_p95_threshold_eeg": args.max_dropped_samples_main_trial_p95,
+            "dropped_samples_main_trials_mean_exceeds_threshold_eeg": dropped_mean_exceeds_eeg,
+            "dropped_samples_main_trials_p95_exceeds_threshold_eeg": dropped_p95_exceeds_eeg,
+            "dropped_samples_main_trials_mean_threshold_ecg": args.max_dropped_samples_main_trial_mean_ecg,
+            "dropped_samples_main_trials_p95_threshold_ecg": args.max_dropped_samples_main_trial_p95_ecg,
+            "dropped_samples_main_trials_mean_exceeds_threshold_ecg": dropped_mean_exceeds_ecg,
+            "dropped_samples_main_trials_p95_exceeds_threshold_ecg": dropped_p95_exceeds_ecg,
             "response_time_main_mean_s": mean(rt_main) if rt_main else None,
             "response_time_main_median_s": median(rt_main) if rt_main else None,
             "response_time_main_p95_s": _percentile(rt_main, 0.95),
@@ -1158,6 +1624,21 @@ def main() -> None:
             "pupil_pct_conf_lt_0_6": pupil_quality["pupil_pct_conf_lt_0_6"],
             "pupil_pct_missing_confidence": pupil_quality["pupil_pct_missing_confidence"],
             "pupil_pct_nonpositive_size": pupil_quality["pupil_pct_nonpositive_size"],
+            "qc_flagged": qc_flagged,
+            "qc_rejected": qc_rejected,
+            "qc_rejected_any_modality": qc_rejected_any_modality,
+            "qc_rejected_all_modalities": qc_rejected_all_modalities,
+            "qc_rejected_eeg": qc_rejected_eeg,
+            "qc_rejected_ecg": qc_rejected_ecg,
+            "qc_rejected_pupil": qc_rejected_pupil,
+            "qc_reason_count": len(anomalies),
+            "qc_rejection_reasons": list(anomalies),
+            "qc_reason_count_eeg": len(eeg_qc_reasons),
+            "qc_reason_count_ecg": len(ecg_qc_reasons),
+            "qc_reason_count_pupil": len(pupil_qc_reasons),
+            "qc_rejection_reasons_eeg": list(eeg_qc_reasons),
+            "qc_rejection_reasons_ecg": list(ecg_qc_reasons),
+            "qc_rejection_reasons_pupil": list(pupil_qc_reasons),
             "anomalies": anomalies,
         }
         subject_rows.append(subject_row)
@@ -1167,8 +1648,39 @@ def main() -> None:
     subject_rows.sort(key=lambda row: row["participant_id"])
     subject_table_rows = _subject_rows_to_table_rows(subject_rows)
     _write_tsv(subject_table_path, subject_table_rows)
+    participant_bids_sample_drop_summary_rows = _subject_rows_to_bids_sample_drop_summary_rows(
+        subject_rows
+    )
+    _write_csv(
+        participant_bids_sample_drop_summary_csv_path,
+        participant_bids_sample_drop_summary_rows,
+    )
 
     included_rows = [row for row in subject_rows if row["analysis_included"] == "true"]
+    carried_forward_rows = [
+        row for row in subject_rows if row["analysis_included_effective"] == "true"
+    ]
+    flagged_rows = [row for row in subject_rows if row["qc_flagged"]]
+    rejected_rows = [row for row in subject_rows if row["qc_rejected"]]
+    rejected_rows_any_modality = [
+        row for row in subject_rows if row["qc_rejected_any_modality"]
+    ]
+    carried_forward_rows_by_modality = {
+        "eeg": [
+            row for row in subject_rows if row["analysis_included_effective_eeg"] == "true"
+        ],
+        "ecg": [
+            row for row in subject_rows if row["analysis_included_effective_ecg"] == "true"
+        ],
+        "pupil": [
+            row for row in subject_rows if row["analysis_included_effective_pupil"] == "true"
+        ],
+    }
+    rejected_rows_by_modality = {
+        "eeg": [row for row in subject_rows if row["qc_rejected_eeg"]],
+        "ecg": [row for row in subject_rows if row["qc_rejected_ecg"]],
+        "pupil": [row for row in subject_rows if row["qc_rejected_pupil"]],
+    }
     modality_coverage = {
         "n_subjects": len(subject_rows),
         "n_with_eeg": sum(1 for row in subject_rows if row["has_eeg"]),
@@ -1212,6 +1724,9 @@ def main() -> None:
 
     figure_paths = {
         "dropped_samples_main_per_subject": str(_plot_dropped_samples(subject_rows, fig_dir)),
+        "dropped_samples_flagged_subjects_eeg_ecg": str(
+            _plot_dropped_sample_flags_by_modality(subject_rows, fig_dir)
+        ),
         "pupil_mean_confidence_per_subject": str(_plot_pupil_confidence(subject_rows, fig_dir)),
         "ecg_mean_hr_per_subject": str(_plot_hr_mean(subject_rows, fig_dir)),
         "ecg_baseline_vs_task_hr_per_subject": str(_plot_hr_baseline_vs_task(subject_rows, fig_dir)),
@@ -1223,9 +1738,65 @@ def main() -> None:
         "task": task,
         "trial_table_path": str(trial_table_path),
         "subject_table_path": str(subject_table_path),
+        "participant_bids_sample_drop_summary_csv": str(
+            participant_bids_sample_drop_summary_csv_path
+        ),
         "fig_dir": str(fig_dir),
+        "strict_mode": bool(args.strict),
+        "qc_decision_policy": "modality_reject_continue" if args.strict else "flag_only",
         "modality_coverage": modality_coverage,
         "analysis_included_subjects": len(included_rows),
+        "analysis_included_subjects_after_qc": len(carried_forward_rows),
+        "analysis_included_subjects_after_qc_by_modality": {
+            modality: len(rows)
+            for modality, rows in carried_forward_rows_by_modality.items()
+        },
+        "subjects_flagged_by_any_qc_anomaly": [row["participant_id"] for row in flagged_rows],
+        "subjects_rejected_after_qc": [row["participant_id"] for row in rejected_rows],
+        "subjects_rejected_after_qc_any_modality": [
+            row["participant_id"] for row in rejected_rows_any_modality
+        ],
+        "subjects_rejected_after_qc_all_modalities": [
+            row["participant_id"] for row in rejected_rows
+        ],
+        "subjects_rejected_after_qc_by_modality": {
+            modality: [row["participant_id"] for row in rows]
+            for modality, rows in rejected_rows_by_modality.items()
+        },
+        "subjects_carried_forward_after_qc": [
+            row["participant_id"] for row in carried_forward_rows
+        ],
+        "subjects_carried_forward_after_qc_by_modality": {
+            modality: [row["participant_id"] for row in rows]
+            for modality, rows in carried_forward_rows_by_modality.items()
+        },
+        "qc_reasons_by_subject": {
+            row["participant_id"]: list(row["qc_rejection_reasons"])
+            for row in subject_rows
+            if row["qc_rejection_reasons"]
+        },
+        "rejection_reasons_by_subject": {
+            row["participant_id"]: list(row["qc_rejection_reasons"])
+            for row in rejected_rows
+        },
+        "rejection_reasons_by_subject_any_modality": {
+            row["participant_id"]: list(row["qc_rejection_reasons"])
+            for row in rejected_rows_any_modality
+        },
+        "rejection_reasons_by_subject_by_modality": {
+            "eeg": {
+                row["participant_id"]: list(row["qc_rejection_reasons_eeg"])
+                for row in rejected_rows_by_modality["eeg"]
+            },
+            "ecg": {
+                row["participant_id"]: list(row["qc_rejection_reasons_ecg"])
+                for row in rejected_rows_by_modality["ecg"]
+            },
+            "pupil": {
+                row["participant_id"]: list(row["qc_rejection_reasons_pupil"])
+                for row in rejected_rows_by_modality["pupil"]
+            },
+        },
         "trial_rows_total": len(trial_rows),
         "trial_rows_main": sum(1 for row in trial_rows if row.get("block") == "main"),
         "trial_rows_tutorial": sum(1 for row in trial_rows if row.get("block") == "tutorial"),
@@ -1233,6 +1804,48 @@ def main() -> None:
             "mean": mean(dropped_main_all) if dropped_main_all else None,
             "median": median(dropped_main_all) if dropped_main_all else None,
             "p95": _percentile(dropped_main_all, 0.95),
+        },
+        "eeg_dropped_samples_thresholds": {
+            "max_dropped_samples_main_trial_mean": args.max_dropped_samples_main_trial_mean,
+            "max_dropped_samples_main_trial_p95": args.max_dropped_samples_main_trial_p95,
+        },
+        "ecg_dropped_samples_thresholds": {
+            "max_dropped_samples_main_trial_mean": args.max_dropped_samples_main_trial_mean_ecg,
+            "max_dropped_samples_main_trial_p95": args.max_dropped_samples_main_trial_p95_ecg,
+        },
+        "subjects_exceeding_eeg_dropped_samples_main_trial_mean_threshold": [
+            row["participant_id"]
+            for row in subject_rows
+            if row["dropped_samples_main_trials_mean_exceeds_threshold_eeg"]
+        ],
+        "subjects_exceeding_eeg_dropped_samples_main_trial_p95_threshold": [
+            row["participant_id"]
+            for row in subject_rows
+            if row["dropped_samples_main_trials_p95_exceeds_threshold_eeg"]
+        ],
+        "subjects_exceeding_ecg_dropped_samples_main_trial_mean_threshold": [
+            row["participant_id"]
+            for row in subject_rows
+            if row["dropped_samples_main_trials_mean_exceeds_threshold_ecg"]
+        ],
+        "subjects_exceeding_ecg_dropped_samples_main_trial_p95_threshold": [
+            row["participant_id"]
+            for row in subject_rows
+            if row["dropped_samples_main_trials_p95_exceeds_threshold_ecg"]
+        ],
+        "subjects_flagged_by_dropped_samples_thresholds": {
+            "eeg": [
+                row["participant_id"]
+                for row in subject_rows
+                if row["dropped_samples_main_trials_mean_exceeds_threshold_eeg"]
+                or row["dropped_samples_main_trials_p95_exceeds_threshold_eeg"]
+            ],
+            "ecg": [
+                row["participant_id"]
+                for row in subject_rows
+                if row["dropped_samples_main_trials_mean_exceeds_threshold_ecg"]
+                or row["dropped_samples_main_trials_p95_exceeds_threshold_ecg"]
+            ],
         },
         "pupil_mean_confidence_distribution": {
             "mean": mean(pupil_conf_all) if pupil_conf_all else None,
@@ -1290,11 +1903,26 @@ def main() -> None:
     print(f"Wrote figures under: {fig_dir}")
     print(f"Subjects processed: {len(subject_rows)}")
     print(f"Anomalies: {len(all_anomalies)}")
+    print(
+        "Stage 1 QC decision summary: "
+        f"flagged={len(flagged_rows)} "
+        f"rejected_any={len(rejected_rows_any_modality)} "
+        f"rejected_all={len(rejected_rows)} "
+        f"carried_forward_union={len(carried_forward_rows)} "
+        f"carried_forward_eeg={len(carried_forward_rows_by_modality['eeg'])} "
+        f"carried_forward_ecg={len(carried_forward_rows_by_modality['ecg'])} "
+        f"carried_forward_pupil={len(carried_forward_rows_by_modality['pupil'])}"
+    )
     if all_anomalies:
         for line in all_anomalies:
             print(f"  - {line}")
-    if args.strict and all_anomalies:
-        raise SystemExit(1)
+    if args.strict and rejected_rows_any_modality:
+        rejected_ids = ", ".join(row["participant_id"] for row in rejected_rows_any_modality)
+        print(
+            "Strict Stage 1 QC mode marked modality-specific subject rejections and expects "
+            "downstream stages to continue with the carried-forward union: "
+            f"{rejected_ids}"
+        )
 
 
 if __name__ == "__main__":

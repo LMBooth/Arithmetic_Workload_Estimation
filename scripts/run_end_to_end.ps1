@@ -2,7 +2,7 @@ param(
     [string]$DatasetId = "",
     [string]$ArchiveUrl = "",
     [string]$Target = "data/bids_arithmetic",
-    [string]$Config = "analysis_pipeline/config/pipeline.yaml",
+    [string]$Config = "analysis_pipeline/config/pipeline_unified_classic_nn_baseline_preproc.yaml",
     [switch]$ForceDownload
 )
 

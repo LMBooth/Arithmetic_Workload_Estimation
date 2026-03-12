@@ -120,6 +120,7 @@ def _build_result_frames(
         class_scenario = config.get("class_scenario", {})
         scenario = str(class_scenario.get("name") or config.get("run_tag") or path.stem).strip()
         final_labels = [str(x) for x in class_scenario.get("final_labels", [])]
+        label_rank_map = {label: idx for idx, label in enumerate(final_labels)}
         class_count = len(final_labels)
         scenario_meta[scenario] = {
             "scenario": scenario,
@@ -181,14 +182,16 @@ def _build_result_frames(
         for ds in payload.get("dataset_stats", []):
             dataset = str(ds.get("dataset", ""))
             class_counts = ds.get("class_counts", {}) or {}
-            for label, count in class_counts.items():
+            for fallback_rank, (label, count) in enumerate(class_counts.items()):
+                label_text = str(label)
                 class_dist_rows.append(
                     {
                         "scenario": scenario,
                         "scenario_rank": scenario_rank,
                         "class_count": class_count,
                         "dataset": dataset,
-                        "label": str(label),
+                        "label": label_text,
+                        "label_rank": int(label_rank_map.get(label_text, len(label_rank_map) + fallback_rank)),
                         "count": int(count),
                         "results_json": str(path),
                     }
@@ -247,7 +250,7 @@ def _plot_grouped_metric(
 ) -> None:
     if best_df.empty or not scenario_order:
         return
-    protocols = ["group_holdout", "loso", "within_participant"]
+    protocols = ["pooled_stratified", "group_holdout", "loso", "within_participant"]
     protocols = [p for p in protocols if p in set(best_df["protocol"].tolist())]
     if not protocols:
         protocols = sorted(set(best_df["protocol"].tolist()))
@@ -293,7 +296,7 @@ def _plot_metric_heatmap(
 ) -> None:
     if best_df.empty or not scenario_order:
         return
-    protocols = ["group_holdout", "loso", "within_participant"]
+    protocols = ["pooled_stratified", "group_holdout", "loso", "within_participant"]
     protocols = [p for p in protocols if p in set(best_df["protocol"].tolist())]
     if not protocols:
         protocols = sorted(set(best_df["protocol"].tolist()))
@@ -384,7 +387,7 @@ def _build_confusion_recall_frame(
             model = str(highlight.get("model", ""))
             feature_selector = str(highlight.get("feature_selector", "none"))
             pipeline_id = str(highlight.get("pipeline_id", f"{model}+{feature_selector}"))
-            for label, recall, support in zip(labels, recalls, supports):
+            for label_rank, (label, recall, support) in enumerate(zip(labels, recalls, supports)):
                 rows.append(
                     {
                         "scenario": scenario,
@@ -394,6 +397,7 @@ def _build_confusion_recall_frame(
                         "feature_selector": feature_selector,
                         "pipeline_id": pipeline_id,
                         "label": label,
+                        "label_rank": int(label_rank),
                         "recall": recall,
                         "support": support,
                         "aggregate_metric": float(highlight.get("aggregate_metric", 0.0)),
@@ -421,7 +425,7 @@ def _plot_confusion_panels(
         if not highlights:
             continue
         by_protocol = {str(h.get("protocol", "")): h for h in highlights}
-        protocol_order = ["group_holdout", "loso", "within_participant"]
+        protocol_order = ["pooled_stratified", "group_holdout", "loso", "within_participant"]
         ordered = [by_protocol[p] for p in protocol_order if p in by_protocol] + [
             h for h in highlights if str(h.get("protocol", "")) not in protocol_order
         ]
@@ -558,9 +562,14 @@ def _write_report_bundle(
         ranking_df.to_csv(ranking_csv, index=False)
         ranking_md.write_text(_to_markdown(ranking_df), encoding="utf-8")
     if not class_df.empty:
-        class_table = class_df.sort_values(["scenario_rank", "dataset", "label"]).reset_index(drop=True)
-        class_table.to_csv(class_csv, index=False)
-        class_md.write_text(_to_markdown(class_table, float_decimals=0), encoding="utf-8")
+        class_sort_cols = ["scenario_rank", "dataset"]
+        if "label_rank" in class_df.columns:
+            class_sort_cols.append("label_rank")
+        class_sort_cols.append("label")
+        class_table = class_df.sort_values(class_sort_cols, kind="stable").reset_index(drop=True)
+        class_table_out = class_table.drop(columns=["label_rank"], errors="ignore")
+        class_table_out.to_csv(class_csv, index=False)
+        class_md.write_text(_to_markdown(class_table_out, float_decimals=0), encoding="utf-8")
 
     _plot_grouped_metric(
         best_df=best_plot_df,
@@ -611,11 +620,14 @@ def _write_report_bundle(
         if dataset_for_plots:
             recall_df = recall_df[recall_df["dataset"] == dataset_for_plots].reset_index(drop=True)
         if not recall_df.empty:
-            recall_df = recall_df.sort_values(
-                ["scenario", "dataset", "protocol", "model", "feature_selector", "label"],
-            ).reset_index(drop=True)
-            recall_df.to_csv(recall_csv, index=False)
-            recall_md.write_text(_to_markdown(recall_df), encoding="utf-8")
+            recall_sort_cols = ["scenario", "dataset", "protocol", "model", "feature_selector"]
+            if "label_rank" in recall_df.columns:
+                recall_sort_cols.append("label_rank")
+            recall_sort_cols.append("label")
+            recall_df = recall_df.sort_values(recall_sort_cols, kind="stable").reset_index(drop=True)
+            recall_out = recall_df.drop(columns=["label_rank"], errors="ignore")
+            recall_out.to_csv(recall_csv, index=False)
+            recall_md.write_text(_to_markdown(recall_out), encoding="utf-8")
 
     return {
         "out_dir": str(out_dir),

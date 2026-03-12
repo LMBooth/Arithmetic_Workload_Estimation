@@ -359,7 +359,10 @@ def main() -> None:
     parser.add_argument(
         "--strict",
         action="store_true",
-        help="Exit with non-zero code if any anomalies are detected.",
+        help=(
+            "Record Stage 0 anomalies in outputs and continue without aborting. "
+            "Downstream QC decides whether subjects are rejected."
+        ),
     )
     args = parser.parse_args()
 
@@ -486,7 +489,10 @@ def main() -> None:
         for line in all_anomalies:
             print(f"  - {line}")
     if args.strict and all_anomalies:
-        raise SystemExit(1)
+        print(
+            "Strict Stage 0 mode recorded anomalies in the trial-table summary and will continue. "
+            "Downstream QC is expected to decide whether subjects are rejected."
+        )
 
 
 if __name__ == "__main__":

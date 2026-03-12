@@ -15,29 +15,25 @@ Thumbs.db
 # Raw/local data
 data/
 
+# Agent or local workspace metadata
+AGENTS.md
+
 # Generated pipeline artifacts (large / reproducible)
 analysis_pipeline/derivatives/
 analysis_pipeline/features/
 analysis_pipeline/models/
+analysis_pipeline/runs/
 
-# Large report artifacts
-analysis_pipeline/reports/confusion_pngs/
-analysis_pipeline/reports/run_logs/
-analysis_pipeline/reports/figures/
-analysis_pipeline/reports/report_assets_*/
-
-# Large intermediate report files
-analysis_pipeline/reports/ml_results*.json
-analysis_pipeline/reports/confusion_highlights*.json
-analysis_pipeline/reports/epoch_manifest.tsv
-analysis_pipeline/reports/trial_table_*.tsv
-
-# Runtime files
-analysis_pipeline/reports/*.pid
-analysis_pipeline/reports/*.log
+# Generated report artifacts
+analysis_pipeline/reports/**
 
 # Keep folder structure if needed
 !analysis_pipeline/derivatives/.gitkeep
 !analysis_pipeline/features/.gitkeep
 !analysis_pipeline/models/.gitkeep
 !analysis_pipeline/reports/.gitkeep
+
+# Local manuscript/transfer packages
+docs/*.docx
+docs/*.zip
+docs/figure_transfer_*/

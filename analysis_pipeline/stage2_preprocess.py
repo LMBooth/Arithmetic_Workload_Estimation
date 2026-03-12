@@ -12,6 +12,7 @@ from typing import Any
 
 import mne
 import numpy as np
+from eeg_units import ensure_eeg_data_in_volts
 from mne.preprocessing import ICA
 from scipy import signal as sp_signal
 
@@ -353,6 +354,8 @@ def _process_subject(
         "eeg_ica_excluded_count": "0",
         "eeg_channels_out": "0",
         "eeg_sfreq_hz": "n/a",
+        "eeg_input_unit_inferred": "n/a",
+        "eeg_scale_factor_to_volts": "n/a",
         "ecg_status": "not_run",
         "ecg_samples": "0",
         "ecg_sfreq_hz": "n/a",
@@ -377,16 +380,33 @@ def _process_subject(
                 raw_full.set_channel_types({ecg_name: "ecg"}, verbose="ERROR")
 
             raw_eeg = raw_full.copy().pick("eeg")
+            raw_eeg._data, eeg_scale_info = ensure_eeg_data_in_volts(raw_eeg._data)
+            log["eeg_input_unit_inferred"] = str(eeg_scale_info.get("input_unit_inferred", "unknown"))
+            log["eeg_scale_factor_to_volts"] = _format_float(
+                float(eeg_scale_info.get("scale_factor_to_volts", 1.0)),
+                9,
+            )
+
             if args.eeg_notch_hz > 0 and args.eeg_notch_hz < (raw_eeg.info["sfreq"] / 2.0):
                 raw_eeg.notch_filter(
                     freqs=[args.eeg_notch_hz], picks="eeg", verbose="ERROR"
                 )
-            raw_eeg.filter(
-                l_freq=args.eeg_l_freq,
-                h_freq=args.eeg_h_freq,
-                picks="eeg",
-                verbose="ERROR",
-            )
+            if str(args.eeg_filter_method).strip().lower() == "iir_butter":
+                raw_eeg.filter(
+                    l_freq=args.eeg_l_freq,
+                    h_freq=args.eeg_h_freq,
+                    picks="eeg",
+                    method="iir",
+                    iir_params={"order": int(args.eeg_butter_order), "ftype": "butter"},
+                    verbose="ERROR",
+                )
+            else:
+                raw_eeg.filter(
+                    l_freq=args.eeg_l_freq,
+                    h_freq=args.eeg_h_freq,
+                    picks="eeg",
+                    verbose="ERROR",
+                )
             bads = _detect_bad_eeg_channels(raw_eeg)
             raw_eeg.info["bads"] = bads
             log["eeg_bad_count"] = str(len(bads))
@@ -437,6 +457,11 @@ def _process_subject(
                     notes.append("EEG ICA failed; continuing without ICA output.")
                     log["eeg_ica_applied"] = "false"
 
+            if eeg_scale_info.get("scale_applied"):
+                notes.append(
+                    "EEG data were inferred to be stored in microvolts and converted to volts before saving."
+                )
+
             eeg_out = eeg_out_dir / f"{paths.subject}_task-arithmetic_desc-preproc_eeg_raw.fif"
             raw_eeg.save(eeg_out, overwrite=args.overwrite, verbose="ERROR")
             eeg_meta = {
@@ -446,6 +471,8 @@ def _process_subject(
                 "output_fif": str(eeg_out),
                 "parameters": {
                     "notch_hz": args.eeg_notch_hz,
+                    "filter_method": str(args.eeg_filter_method),
+                    "butter_order": int(args.eeg_butter_order),
                     "bandpass_hz": [args.eeg_l_freq, args.eeg_h_freq],
                     "interpolate_bads": args.eeg_interpolate_bads,
                     "run_ica": args.run_ica,
@@ -458,6 +485,11 @@ def _process_subject(
                 "ica_excluded": ica_excluded,
                 "sfreq_hz": float(raw_eeg.info["sfreq"]),
                 "n_channels_out": int(raw_eeg.info["nchan"]),
+                "signal_units_out": "V",
+                "input_unit_inferred": eeg_scale_info.get("input_unit_inferred"),
+                "scale_factor_to_volts": float(eeg_scale_info.get("scale_factor_to_volts", 1.0)),
+                "demeaned_p95_abs_input": eeg_scale_info.get("demeaned_p95_abs_input"),
+                "demeaned_p95_abs_output_volts": eeg_scale_info.get("demeaned_p95_abs_output_volts"),
             }
             (eeg_out_dir / f"{paths.subject}_task-arithmetic_desc-preproc_eeg.json").write_text(
                 json.dumps(eeg_meta, indent=2) + "\n",
@@ -650,10 +682,42 @@ def main() -> None:
         default=None,
         help="Optional subset of subject IDs (e.g., sub-001 sub-003).",
     )
+    parser.add_argument(
+        "--out-root",
+        default=None,
+        help="Output root for cleaned derivatives (default: analysis_pipeline/derivatives/cleaned).",
+    )
+    parser.add_argument(
+        "--reports-dir",
+        default=None,
+        help="Report directory for Stage 2 outputs (default: analysis_pipeline/reports).",
+    )
+    parser.add_argument(
+        "--preprocess-log-out",
+        default=None,
+        help="Preprocess log TSV path (default: <reports_dir>/preprocess_log.tsv).",
+    )
+    parser.add_argument(
+        "--summary-json",
+        default=None,
+        help="Preprocess summary JSON path (default: <reports_dir>/preprocess_summary.json).",
+    )
     parser.add_argument("--overwrite", action="store_true", help="Overwrite existing outputs.")
 
     parser.add_argument("--eeg-notch-hz", type=float, default=50.0)
-    parser.add_argument("--eeg-l-freq", type=float, default=1.0)
+    parser.add_argument(
+        "--eeg-filter-method",
+        choices=["iir_butter", "fir"],
+        default="iir_butter",
+        help="EEG bandpass filter implementation (default: 3rd-order Butterworth IIR).",
+    )
+    parser.add_argument(
+        "--eeg-butter-order",
+        type=int,
+        default=3,
+        help="Butterworth order for EEG IIR filtering when --eeg-filter-method=iir_butter.",
+    )
+    parser.add_argument("--eeg-l-freq", type=float, default=2.0)
     parser.add_argument("--eeg-h-freq", type=float, default=40.0)
     parser.add_argument(
         "--eeg-interpolate-bads",
@@ -682,6 +746,8 @@ def main() -> None:
     parser.add_argument("--pupil-smooth-seconds", type=float, default=0.20)
     parser.add_argument("--pupil-target-sfreq", type=float, default=100.0)
     args = parser.parse_args()
+    if args.eeg_butter_order < 1:
+        raise ValueError("--eeg-butter-order must be >= 1.")
 
     bids_root = _resolve_bids_root(args.bids_root)
     if not bids_root.exists():
@@ -689,10 +755,14 @@ def main() -> None:
     task = args.task or _task_from_bids_root(bids_root)
 
     participants = _read_participants(bids_root / "participants.tsv")
-    out_root = _derivatives_root()
+    out_root = Path(args.out_root).resolve() if args.out_root else _derivatives_root()
     out_root.mkdir(parents=True, exist_ok=True)
-    reports_dir = _reports_dir()
+    reports_dir = Path(args.reports_dir).resolve() if args.reports_dir else _reports_dir()
     reports_dir.mkdir(parents=True, exist_ok=True)
+    log_path = Path(args.preprocess_log_out).resolve() if args.preprocess_log_out else reports_dir / "preprocess_log.tsv"
+    summary_path = Path(args.summary_json).resolve() if args.summary_json else reports_dir / "preprocess_summary.json"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
 
     subject_dirs = sorted(path for path in bids_root.glob("sub-*") if path.is_dir())
     if args.subjects:
@@ -738,6 +808,8 @@ def main() -> None:
         "eeg_ica_excluded_count",
         "eeg_channels_out",
         "eeg_sfreq_hz",
+        "eeg_input_unit_inferred",
+        "eeg_scale_factor_to_volts",
         "ecg_status",
         "ecg_samples",
         "ecg_sfreq_hz",
@@ -751,7 +823,6 @@ def main() -> None:
         "pupil_target_sfreq_hz",
         "notes",
     ]
-    log_path = reports_dir / "preprocess_log.tsv"
     _write_tsv(log_path, fields, logs)
 
     summary = {
@@ -762,6 +833,8 @@ def main() -> None:
         "preprocess_log_tsv": str(log_path),
         "parameters": {
             "eeg_notch_hz": args.eeg_notch_hz,
+            "eeg_filter_method": str(args.eeg_filter_method),
+            "eeg_butter_order": int(args.eeg_butter_order),
             "eeg_bandpass_hz": [args.eeg_l_freq, args.eeg_h_freq],
             "eeg_interpolate_bads": args.eeg_interpolate_bads,
             "run_ica": args.run_ica,
@@ -796,7 +869,6 @@ def main() -> None:
             else None
         ),
     }
-    summary_path = reports_dir / "preprocess_summary.json"
     summary_path.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
 
     print(f"Wrote preprocess log: {log_path}")

@@ -154,6 +154,25 @@ def _default_summary_out() -> Path:
     return _reports_dir() / "fusion_summary.json"
 
 
+def _default_epoch_manifest_path() -> Path:
+    return _reports_dir() / "epoch_manifest.tsv"
+
+
+def _verification_stem_from_summary(summary_out: Path) -> str:
+    stem = summary_out.stem
+    if stem.startswith("fusion_summary"):
+        return stem.replace("fusion_summary", "fusion_verification", 1)
+    return f"{stem}_verification"
+
+
+def _default_verification_json_out(summary_out: Path) -> Path:
+    return summary_out.with_name(f"{_verification_stem_from_summary(summary_out)}.json")
+
+
+def _default_verification_md_out(summary_out: Path) -> Path:
+    return summary_out.with_name(f"{_verification_stem_from_summary(summary_out)}.md")
+
+
 def _as_float(value: str | None) -> float | None:
     if value is None:
         return None
@@ -214,6 +233,38 @@ def _write_tsv(path: Path, rows: list[dict[str, str]], preferred_prefix: list[st
         writer.writeheader()
         for row in rows:
             writer.writerow({k: row.get(k, "") for k in fieldnames})
+
+
+def _load_modality_subject_filters(
+    qc_summary_path: Path | None,
+    selected_modalities: list[str],
+    subject_subset: set[str] | None,
+) -> dict[str, set[str]] | None:
+    if qc_summary_path is None:
+        return None
+    if not qc_summary_path.exists():
+        raise FileNotFoundError(qc_summary_path)
+
+    payload = json.loads(qc_summary_path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"QC summary is not a JSON object: {qc_summary_path}")
+
+    carry_map = payload.get("subjects_carried_forward_after_qc_by_modality", {}) or {}
+    if not isinstance(carry_map, dict) or not carry_map:
+        return None
+
+    fallback = set(str(x).strip() for x in (payload.get("subjects_carried_forward_after_qc", []) or []) if str(x).strip())
+    filters: dict[str, set[str]] = {}
+    for modality in selected_modalities:
+        values = carry_map.get(modality)
+        if isinstance(values, list):
+            modality_subjects = {str(x).strip() for x in values if str(x).strip()}
+        else:
+            modality_subjects = set(fallback)
+        if subject_subset is not None:
+            modality_subjects &= set(subject_subset)
+        filters[modality] = modality_subjects
+    return filters
 
 
 def _difficulty_bounds(label: str) -> tuple[float | None, float | None]:
@@ -368,7 +419,7 @@ def _build_modality_ml_rows(
     dropout_threshold: float,
     subject_dropout_thresholds: dict[str, float],
     keep_dropout_failed: bool,
-) -> tuple[list[dict[str, str]], dict[str, int]]:
+) -> tuple[list[dict[str, str]], dict[str, Any]]:
     stats = {
         "input_rows": len(source_rows),
         "missing_trial_meta": 0,
@@ -377,6 +428,8 @@ def _build_modality_ml_rows(
         "dropout_filtered": 0,
         "rows_out": 0,
     }
+    dropout_filtered_by_participant: Counter[str] = Counter()
+    rows_out_by_participant: Counter[str] = Counter()
     out: list[dict[str, str]] = []
     for row in source_rows:
         trial_id = (row.get("trial_id") or "").strip()
@@ -407,6 +460,7 @@ def _build_modality_ml_rows(
         )
         if not dropout_keep:
             stats["dropout_filtered"] += 1
+            dropout_filtered_by_participant[participant] += 1
             if not keep_dropout_failed:
                 continue
 
@@ -428,11 +482,14 @@ def _build_modality_ml_rows(
         row_out["modality"] = modality
         row_out["ml_keep"] = _bool_text(dropout_keep)
         out.append(row_out)
+        rows_out_by_participant[participant] += 1
 
     out.sort(key=_row_sort_key)
     for idx, row in enumerate(out, start=1):
         row["ml_row_id"] = f"{modality}_row-{idx:06d}"
     stats["rows_out"] = len(out)
+    stats["dropout_filtered_by_participant"] = dict(sorted(dropout_filtered_by_participant.items()))
+    stats["rows_out_by_participant"] = dict(sorted(rows_out_by_participant.items()))
     return out, stats
 
 
@@ -526,6 +583,387 @@ def _dataset_stats(rows: list[dict[str, str]], target_col: str) -> dict[str, Any
     }
 
 
+def _rows_to_key_map(rows: list[dict[str, str]]) -> dict[tuple[str, str], dict[str, str]]:
+    keyed: dict[tuple[str, str], dict[str, str]] = {}
+    for row in rows:
+        key = _primary_epoch_key(row)
+        if not key[0] or not key[1]:
+            continue
+        if key not in keyed:
+            keyed[key] = row
+    return keyed
+
+
+def _rows_for_participants(
+    rows_per_participant: dict[str, int],
+    participants: list[str],
+) -> int:
+    return sum(int(rows_per_participant.get(participant, 0)) for participant in participants)
+
+
+def _markdown_table(rows: list[dict[str, Any]], columns: list[str]) -> str:
+    if not rows:
+        return "_None_"
+    header = "| " + " | ".join(columns) + " |"
+    sep = "| " + " | ".join(["---"] * len(columns)) + " |"
+    body = [
+        "| " + " | ".join(str(row.get(col, "")) for col in columns) + " |"
+        for row in rows
+    ]
+    return "\n".join([header, sep, *body])
+
+
+def _build_fusion_verification(
+    *,
+    selected_modalities: list[str],
+    source_rows_by_modality: dict[str, list[dict[str, str]]],
+    modality_rows_out: dict[str, list[dict[str, str]]],
+    fused_rows: list[dict[str, str]],
+    dataset_stats_by_name: dict[str, dict[str, Any]],
+    split_manifest: dict[str, Any],
+    require_all_selected_modalities: bool,
+    epoch_manifest_rows: list[dict[str, str]] | None,
+    epoch_manifest_path: Path | None,
+) -> dict[str, Any]:
+    source_key_maps = {
+        modality: _rows_to_key_map(source_rows_by_modality.get(modality, []))
+        for modality in selected_modalities
+    }
+    ml_key_maps = {
+        modality: _rows_to_key_map(modality_rows_out.get(modality, []))
+        for modality in selected_modalities
+    }
+    fused_key_map = _rows_to_key_map(fused_rows)
+    selected_key_sets = [set(ml_key_maps[modality].keys()) for modality in selected_modalities]
+    selected_intersection = set.intersection(*selected_key_sets) if selected_key_sets else set()
+    selected_union = set.union(*selected_key_sets) if selected_key_sets else set()
+    source_key_sets = [set(source_key_maps[modality].keys()) for modality in selected_modalities]
+    source_intersection = set.intersection(*source_key_sets) if source_key_sets else set()
+    source_union = set.union(*source_key_sets) if source_key_sets else set()
+
+    row_counts = {
+        modality: {
+            "stage4_source_rows": len(source_rows_by_modality.get(modality, [])),
+            "stage5_ml_rows": len(modality_rows_out.get(modality, [])),
+            "rows_lost_before_fusion": len(source_rows_by_modality.get(modality, []))
+            - len(modality_rows_out.get(modality, [])),
+            "rows_lost_when_fused": len(set(ml_key_maps[modality].keys()) - set(fused_key_map.keys())),
+        }
+        for modality in selected_modalities
+    }
+    row_counts["fused"] = {
+        "stage4_source_rows": "n/a",
+        "stage5_ml_rows": len(fused_rows),
+        "rows_lost_before_fusion": "n/a",
+        "rows_lost_when_fused": 0,
+    }
+
+    warnings: list[str] = []
+    if require_all_selected_modalities and set(fused_key_map.keys()) != selected_intersection:
+        warnings.append(
+            "Fused rows do not match the intersection of Stage 5 unimodal rows, despite require_all_selected_modalities=true."
+        )
+    if not require_all_selected_modalities and not set(fused_key_map.keys()).issubset(selected_union):
+        warnings.append("Fused rows include keys outside the union of selected unimodal rows.")
+    stage5_ml_keys_identical_across_modalities = len({frozenset(keys) for keys in selected_key_sets}) <= 1
+
+    epoch_manifest_consistency: dict[str, Any] = {
+        "available": epoch_manifest_rows is not None,
+        "epoch_manifest_path": str(epoch_manifest_path) if epoch_manifest_path else None,
+    }
+    if epoch_manifest_rows is not None:
+        manifest_key_map = _rows_to_key_map(epoch_manifest_rows)
+        expected_kept_rows_by_modality: dict[str, int] = {}
+        source_contains_rows_not_kept: dict[str, int] = {}
+        manifest_kept_rows_missing_from_source: dict[str, int] = {}
+        sample_source_rows_not_kept: dict[str, list[dict[str, Any]]] = {}
+
+        for modality in selected_modalities:
+            keep_col = f"{modality}_keep"
+            reason_col = f"{modality}_drop_reason"
+            kept_keys = {
+                key
+                for key, row in manifest_key_map.items()
+                if (row.get(keep_col) or "").strip().lower() == "true"
+            }
+            source_keys = set(source_key_maps[modality].keys())
+            source_not_kept = sorted(source_keys - kept_keys)
+            kept_missing = sorted(kept_keys - source_keys)
+            expected_kept_rows_by_modality[modality] = len(kept_keys)
+            source_contains_rows_not_kept[modality] = len(source_not_kept)
+            manifest_kept_rows_missing_from_source[modality] = len(kept_missing)
+            sample_rows: list[dict[str, Any]] = []
+            for key in source_not_kept[:10]:
+                manifest_row = manifest_key_map.get(key, {})
+                sample_rows.append(
+                    {
+                        "participant_id": key[0],
+                        "epoch_id": key[1],
+                        "keep_flag": manifest_row.get(keep_col, ""),
+                        "drop_reason": manifest_row.get(reason_col, ""),
+                    }
+                )
+            sample_source_rows_not_kept[modality] = sample_rows
+
+            if len(source_rows_by_modality.get(modality, [])) != len(kept_keys):
+                warnings.append(
+                    f"Stage 4 {modality} table row count ({len(source_rows_by_modality.get(modality, []))}) "
+                    f"does not match epoch-manifest keep count ({len(kept_keys)})."
+                )
+            if source_not_kept:
+                warnings.append(
+                    f"Stage 4 {modality} table contains {len(source_not_kept)} rows whose {keep_col}=false in the current epoch manifest."
+                )
+            if kept_missing:
+                warnings.append(
+                    f"Stage 4 {modality} table is missing {len(kept_missing)} rows whose {keep_col}=true in the current epoch manifest."
+                )
+
+        epoch_manifest_consistency.update(
+            {
+                "manifest_rows": len(epoch_manifest_rows),
+                "expected_kept_rows_by_modality": expected_kept_rows_by_modality,
+                "source_contains_rows_not_kept_in_epoch_manifest": source_contains_rows_not_kept,
+                "manifest_kept_rows_missing_from_source": manifest_kept_rows_missing_from_source,
+                "sample_source_rows_not_kept": sample_source_rows_not_kept,
+            }
+        )
+
+    dataset_rows_per_participant = {
+        name: {str(k): int(v) for k, v in stats.get("rows_per_participant", {}).items()}
+        for name, stats in dataset_stats_by_name.items()
+    }
+
+    split_examples: dict[str, list[dict[str, Any]]] = {
+        "leave_one_participant_out": [],
+        "group_holdout": [],
+        "within_participant": [],
+    }
+    fused_less_than_unimodal_in_any_split = False
+    for split in split_manifest.get("strategies", {}).get("leave_one_participant_out", [])[:3]:
+        train_participants = [str(x) for x in split.get("train_participants", [])]
+        test_participants = [str(x) for x in split.get("test_participants", [])]
+        rows_by_dataset = {
+            name: {
+                "train": _rows_for_participants(rows_per, train_participants),
+                "test": _rows_for_participants(rows_per, test_participants),
+            }
+            for name, rows_per in dataset_rows_per_participant.items()
+        }
+        split_examples["leave_one_participant_out"].append(
+            {"split_id": split.get("split_id", ""), "rows_by_dataset": rows_by_dataset}
+        )
+    for split in split_manifest.get("strategies", {}).get("group_holdout", [])[:2]:
+        train_participants = [str(x) for x in split.get("train_participants", [])]
+        test_participants = [str(x) for x in split.get("test_participants", [])]
+        rows_by_dataset = {
+            name: {
+                "train": _rows_for_participants(rows_per, train_participants),
+                "test": _rows_for_participants(rows_per, test_participants),
+            }
+            for name, rows_per in dataset_rows_per_participant.items()
+        }
+        split_examples["group_holdout"].append(
+            {"split_id": split.get("split_id", ""), "rows_by_dataset": rows_by_dataset}
+        )
+    for row in split_manifest.get("strategies", {}).get("within_participant", [])[:5]:
+        split_examples["within_participant"].append(
+            {
+                "participant_id": row.get("participant_id", ""),
+                "rows_by_dataset": row.get("rows_by_dataset", {}),
+            }
+        )
+    for strategy_name in ("leave_one_participant_out", "group_holdout"):
+        for split in split_manifest.get("strategies", {}).get(strategy_name, []):
+            train_participants = [str(x) for x in split.get("train_participants", [])]
+            test_participants = [str(x) for x in split.get("test_participants", [])]
+            for participants in (train_participants, test_participants):
+                fused_rows_here = _rows_for_participants(dataset_rows_per_participant.get("fused", {}), participants)
+                unimodal_rows_here = [
+                    _rows_for_participants(dataset_rows_per_participant.get(modality, {}), participants)
+                    for modality in selected_modalities
+                ]
+                if fused_rows_here < max(unimodal_rows_here, default=0):
+                    fused_less_than_unimodal_in_any_split = True
+                    break
+            if fused_less_than_unimodal_in_any_split:
+                break
+        if fused_less_than_unimodal_in_any_split:
+            break
+    if not fused_less_than_unimodal_in_any_split:
+        for row in split_manifest.get("strategies", {}).get("within_participant", []):
+            rows_by_dataset = row.get("rows_by_dataset", {}) or {}
+            fused_rows_here = int(rows_by_dataset.get("fused", 0) or 0)
+            unimodal_rows_here = [int(rows_by_dataset.get(modality, 0) or 0) for modality in selected_modalities]
+            if fused_rows_here < max(unimodal_rows_here, default=0):
+                fused_less_than_unimodal_in_any_split = True
+                break
+
+    if not fused_less_than_unimodal_in_any_split:
+        warnings.append(
+            "Fused train/test availability is not smaller than unimodal availability in any checked split."
+        )
+    source_rows_extra_before_stage5 = {
+        modality: len(set(source_key_maps[modality].keys()) - source_intersection)
+        for modality in selected_modalities
+    }
+    if (
+        not fused_less_than_unimodal_in_any_split
+        and any(value > 0 for value in source_rows_extra_before_stage5.values())
+        and stage5_ml_keys_identical_across_modalities
+    ):
+        warnings.append(
+            "Stage 4 modality-specific row differences existed, but Stage 5 trial-level dropout filtering removed them before fusion, so the unimodal ML tables ended up with identical keys."
+        )
+
+    return {
+        "selected_modalities": selected_modalities,
+        "require_all_selected_modalities": require_all_selected_modalities,
+        "row_counts": row_counts,
+        "stage4_source_intersection_rows": len(source_intersection),
+        "stage4_source_union_rows": len(source_union),
+        "stage4_source_rows_extra_before_stage5": source_rows_extra_before_stage5,
+        "selected_modality_intersection_rows": len(selected_intersection),
+        "selected_modality_union_rows": len(selected_union),
+        "stage5_ml_keys_identical_across_modalities": stage5_ml_keys_identical_across_modalities,
+        "fused_rows_match_selected_intersection": set(fused_key_map.keys()) == selected_intersection,
+        "rows_lost_when_fusing_vs_stage5_ml": {
+            modality: len(set(ml_key_maps[modality].keys()) - set(fused_key_map.keys()))
+            for modality in selected_modalities
+        },
+        "epoch_manifest_consistency": epoch_manifest_consistency,
+        "split_examples": split_examples,
+        "fused_less_than_unimodal_in_any_checked_split": fused_less_than_unimodal_in_any_split,
+        "warnings": warnings,
+    }
+
+
+def _fusion_verification_markdown(verification: dict[str, Any]) -> str:
+    lines = ["# Fusion Verification", ""]
+    lines.append(f"- Selected modalities: `{', '.join(verification.get('selected_modalities', []))}`")
+    lines.append(
+        f"- Require all selected modalities: `{verification.get('require_all_selected_modalities')}`"
+    )
+    lines.append(
+        f"- Stage 4 source intersection / union: `{verification.get('stage4_source_intersection_rows')}` / `{verification.get('stage4_source_union_rows')}`"
+    )
+    lines.append(
+        f"- Fused matches selected-modality intersection: `{verification.get('fused_rows_match_selected_intersection')}`"
+    )
+    lines.append(
+        f"- Stage 5 unimodal ML keys identical across modalities: `{verification.get('stage5_ml_keys_identical_across_modalities')}`"
+    )
+    lines.append(
+        f"- Fused smaller than unimodal in any checked split: `{verification.get('fused_less_than_unimodal_in_any_checked_split')}`"
+    )
+    lines.append("")
+
+    row_counts = verification.get("row_counts", {}) or {}
+    dataset_rows = []
+    for dataset, stats in row_counts.items():
+        dataset_rows.append(
+            {
+                "dataset": dataset,
+                "stage4_source_rows": stats.get("stage4_source_rows", ""),
+                "stage5_ml_rows": stats.get("stage5_ml_rows", ""),
+                "rows_lost_before_fusion": stats.get("rows_lost_before_fusion", ""),
+                "rows_lost_when_fused": stats.get("rows_lost_when_fused", ""),
+                "extra_before_stage5": (verification.get("stage4_source_rows_extra_before_stage5", {}) or {}).get(dataset, ""),
+            }
+        )
+    lines.append("## Dataset Counts")
+    lines.append(_markdown_table(
+        dataset_rows,
+        ["dataset", "stage4_source_rows", "stage5_ml_rows", "rows_lost_before_fusion", "rows_lost_when_fused", "extra_before_stage5"],
+    ))
+    lines.append("")
+
+    epoch_check = verification.get("epoch_manifest_consistency", {}) or {}
+    lines.append("## Epoch Manifest Check")
+    if not epoch_check.get("available"):
+        lines.append("_Epoch manifest not available._")
+    else:
+        rows = []
+        expected = epoch_check.get("expected_kept_rows_by_modality", {}) or {}
+        source_not_kept = epoch_check.get("source_contains_rows_not_kept_in_epoch_manifest", {}) or {}
+        missing = epoch_check.get("manifest_kept_rows_missing_from_source", {}) or {}
+        row_counts = verification.get("row_counts", {}) or {}
+        for modality in verification.get("selected_modalities", []):
+            rows.append(
+                {
+                    "modality": modality,
+                    "manifest_keep_rows": expected.get(modality, ""),
+                    "stage4_source_rows": row_counts.get(modality, {}).get("stage4_source_rows", ""),
+                    "source_rows_not_kept": source_not_kept.get(modality, ""),
+                    "manifest_keep_missing_from_source": missing.get(modality, ""),
+                }
+            )
+        lines.append(_markdown_table(
+            rows,
+            ["modality", "manifest_keep_rows", "stage4_source_rows", "source_rows_not_kept", "manifest_keep_missing_from_source"],
+        ))
+        sample_rows = []
+        for modality, items in (epoch_check.get("sample_source_rows_not_kept", {}) or {}).items():
+            for item in items[:3]:
+                sample_rows.append({"modality": modality, **item})
+        if sample_rows:
+            lines.append("")
+            lines.append("Sample Stage 4 rows that disagree with the current epoch manifest:")
+            lines.append(_markdown_table(
+                sample_rows,
+                ["modality", "participant_id", "epoch_id", "keep_flag", "drop_reason"],
+            ))
+    lines.append("")
+
+    lines.append("## Split Examples")
+    split_rows = []
+    for strategy_name in ("leave_one_participant_out", "group_holdout"):
+        for item in verification.get("split_examples", {}).get(strategy_name, []):
+            rows_by_dataset = item.get("rows_by_dataset", {}) or {}
+            fused_counts = rows_by_dataset.get("fused", {}) or {}
+            split_rows.append(
+                {
+                    "strategy": strategy_name,
+                    "split_id": item.get("split_id", ""),
+                    "fused_train": fused_counts.get("train", ""),
+                    "fused_test": fused_counts.get("test", ""),
+                    "eeg_train": (rows_by_dataset.get("eeg", {}) or {}).get("train", ""),
+                    "eeg_test": (rows_by_dataset.get("eeg", {}) or {}).get("test", ""),
+                    "pupil_train": (rows_by_dataset.get("pupil", {}) or {}).get("train", ""),
+                    "pupil_test": (rows_by_dataset.get("pupil", {}) or {}).get("test", ""),
+                }
+            )
+    for item in verification.get("split_examples", {}).get("within_participant", []):
+        rows_by_dataset = item.get("rows_by_dataset", {}) or {}
+        split_rows.append(
+            {
+                "strategy": "within_participant",
+                "split_id": item.get("participant_id", ""),
+                "fused_train": "n/a",
+                "fused_test": rows_by_dataset.get("fused", ""),
+                "eeg_train": "n/a",
+                "eeg_test": rows_by_dataset.get("eeg", ""),
+                "pupil_train": "n/a",
+                "pupil_test": rows_by_dataset.get("pupil", ""),
+            }
+        )
+    lines.append(_markdown_table(
+        split_rows,
+        ["strategy", "split_id", "fused_train", "fused_test", "eeg_train", "eeg_test", "pupil_train", "pupil_test"],
+    ))
+    lines.append("")
+
+    lines.append("## Warnings")
+    warnings = verification.get("warnings", []) or []
+    if not warnings:
+        lines.append("- None")
+    else:
+        for warning in warnings:
+            lines.append(f"- {warning}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _build_loso_splits(participants: list[str]) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if len(participants) < 2:
@@ -546,12 +984,14 @@ def _build_loso_splits(participants: list[str]) -> list[dict[str, Any]]:
 def _build_group_holdout_splits(
     participants: list[str],
     fractions: list[float],
+    counts: list[int] | None,
     repeats: int,
     random_seed: int,
 ) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if len(participants) < 2:
         return out
+
     for fraction in fractions:
         if fraction <= 0 or fraction >= 1:
             continue
@@ -567,7 +1007,33 @@ def _build_group_holdout_splits(
                 {
                     "split_id": f"group_holdout_frac{fraction:.3f}_rep{rep:02d}",
                     "strategy": "group_holdout",
+                    "selection_mode": "fraction",
                     "test_fraction": fraction,
+                    "test_participant_count": n_test,
+                    "repeat_index": rep,
+                    "seed": seed,
+                    "test_participants": test_participants,
+                    "train_participants": train_participants,
+                }
+            )
+
+    for count in counts or []:
+        if count <= 0 or count >= len(participants):
+            continue
+        n_test = int(count)
+        for rep in range(1, repeats + 1):
+            seed = random_seed + 5000 + (n_test * 100) + rep
+            rng = random.Random(seed)
+            test_participants = sorted(rng.sample(participants, n_test))
+            test_set = set(test_participants)
+            train_participants = [p for p in participants if p not in test_set]
+            out.append(
+                {
+                    "split_id": f"group_holdout_n{n_test:02d}_rep{rep:02d}",
+                    "strategy": "group_holdout",
+                    "selection_mode": "count",
+                    "test_fraction": float(n_test) / float(len(participants)),
+                    "test_participant_count": n_test,
                     "repeat_index": rep,
                     "seed": seed,
                     "test_participants": test_participants,
@@ -652,6 +1118,19 @@ def main() -> None:
         help="Directory containing Stage 4 feature tables (default: analysis_pipeline/features).",
     )
     parser.add_argument(
+        "--epoch-manifest",
+        default=None,
+        help="Optional Stage 3 epoch manifest TSV used for verification (default: analysis_pipeline/reports/epoch_manifest.tsv).",
+    )
+    parser.add_argument(
+        "--qc-summary-json",
+        default=None,
+        help=(
+            "Optional Stage 1 qc_dataset_summary.json. When present, Stage 5 applies "
+            "modality-specific subject carry-forward sets before building unimodal and fused tables."
+        ),
+    )
+    parser.add_argument(
         "--modalities",
         nargs="+",
         default=["eeg", "ecg", "pupil"],
@@ -716,10 +1195,20 @@ def main() -> None:
         help="Participant holdout fractions for grouped split plans (example: 0.1 0.2).",
     )
     parser.add_argument(
+        "--group-holdout-counts",
+        nargs="*",
+        type=int,
+        default=None,
+        help=(
+            "Explicit participant counts for grouped split plans "
+            "(example: 2 3 leaves out exactly 2 or 3 participants per split)."
+        ),
+    )
+    parser.add_argument(
         "--group-holdout-repeats",
         type=int,
         default=5,
-        help="Number of random repeats per group holdout fraction.",
+        help="Number of random repeats per grouped holdout setting.",
     )
     parser.add_argument(
         "--random-seed",
@@ -755,6 +1244,16 @@ def main() -> None:
         help="Fusion summary JSON output path (default: analysis_pipeline/reports/fusion_summary.json).",
     )
     parser.add_argument(
+        "--verification-json",
+        default=None,
+        help="Verification JSON output path (default follows fusion summary name).",
+    )
+    parser.add_argument(
+        "--verification-md",
+        default=None,
+        help="Verification Markdown output path (default follows fusion summary name).",
+    )
+    parser.add_argument(
         "--unimodal-tag",
         default="",
         help=(
@@ -770,6 +1269,8 @@ def main() -> None:
         raise ValueError("--dropout-percentile must be within (0, 100).")
     if args.group_holdout_repeats <= 0:
         raise ValueError("--group-holdout-repeats must be > 0.")
+    if args.group_holdout_counts and any(count <= 0 for count in args.group_holdout_counts):
+        raise ValueError("--group-holdout-counts values must be > 0.")
     if args.min_within_rows <= 0:
         raise ValueError("--min-within-rows must be > 0.")
 
@@ -792,9 +1293,38 @@ def main() -> None:
         else _default_split_manifest_out(features_dir)
     )
     summary_out = Path(args.summary_json).resolve() if args.summary_json else _default_summary_out()
+    verification_json_out = (
+        Path(args.verification_json).resolve()
+        if args.verification_json
+        else _default_verification_json_out(summary_out)
+    )
+    verification_md_out = (
+        Path(args.verification_md).resolve()
+        if args.verification_md
+        else _default_verification_md_out(summary_out)
+    )
+    epoch_manifest_path = (
+        Path(args.epoch_manifest).resolve()
+        if args.epoch_manifest
+        else _default_epoch_manifest_path()
+    )
+    qc_summary_path = Path(args.qc_summary_json).resolve() if args.qc_summary_json else None
+    if args.epoch_manifest and not epoch_manifest_path.exists():
+        raise FileNotFoundError(epoch_manifest_path)
+    epoch_manifest_rows = _read_tsv_rows(epoch_manifest_path) if epoch_manifest_path.exists() else None
+
+    modality_subject_filters = _load_modality_subject_filters(
+        qc_summary_path=qc_summary_path,
+        selected_modalities=selected_modalities,
+        subject_subset=subject_subset,
+    )
+    effective_subject_subset = set(subject_subset) if subject_subset is not None else None
+    if modality_subject_filters:
+        modality_union = set().union(*modality_subject_filters.values()) if modality_subject_filters else set()
+        effective_subject_subset = modality_union if effective_subject_subset is None else (effective_subject_subset & modality_union)
 
     trial_rows = _read_tsv_rows(trial_table_path)
-    trial_index = _load_trial_index(trial_rows, subject_subset=subject_subset)
+    trial_index = _load_trial_index(trial_rows, subject_subset=effective_subject_subset)
     if not trial_index:
         raise ValueError("No trial metadata rows available after filters.")
 
@@ -818,7 +1348,8 @@ def main() -> None:
         )
 
     modality_rows_out: dict[str, list[dict[str, str]]] = {}
-    modality_stats: dict[str, dict[str, int]] = {}
+    source_rows_by_modality: dict[str, list[dict[str, str]]] = {}
+    modality_stats: dict[str, dict[str, Any]] = {}
     feature_columns_by_modality: dict[str, list[str]] = {}
     unimodal_paths: dict[str, str] = {}
     unimodal_suffix = f"_{args.unimodal_tag.strip()}" if args.unimodal_tag and args.unimodal_tag.strip() else ""
@@ -827,12 +1358,18 @@ def main() -> None:
         print(f"[Modality {modality_idx}/{len(selected_modalities)}] Building {modality} ML table")
         source_path = features_dir / MODALITY_TABLES[modality]
         source_rows = _read_tsv_rows(source_path)
-        if subject_subset is not None:
+        modality_subject_subset = (
+            modality_subject_filters.get(modality)
+            if modality_subject_filters is not None
+            else effective_subject_subset
+        )
+        if modality_subject_subset is not None:
             source_rows = [
                 row
                 for row in source_rows
-                if (row.get("participant_id") or "").strip() in subject_subset
+                if (row.get("participant_id") or "").strip() in modality_subject_subset
             ]
+        source_rows_by_modality[modality] = list(source_rows)
         rows_out, stats = _build_modality_ml_rows(
             modality=modality,
             source_rows=source_rows,
@@ -892,12 +1429,35 @@ def main() -> None:
     primary_dataset_name = "fused" if fused_rows else selected_modalities[0]
     primary_stats = dataset_stats_by_name[primary_dataset_name]
     primary_participants = list(primary_stats.get("participants", []))
+    participants_considered = sorted(
+        {
+            meta.participant_id
+            for meta in trial_index.values()
+            if meta.participant_id and (args.include_tutorial or not meta.is_tutorial)
+        }
+    )
+    dataset_participant_sets = {
+        name: set(str(p) for p in stats.get("participants", []))
+        for name, stats in dataset_stats_by_name.items()
+    }
+    participants_omitted_by_dataset = {
+        name: sorted(set(participants_considered) - participant_set)
+        for name, participant_set in dataset_participant_sets.items()
+    }
+    participants_omitted_from_primary_dataset = list(participants_omitted_by_dataset.get(primary_dataset_name, []))
+    participants_omitted_from_all_datasets = sorted(
+        p
+        for p in participants_considered
+        if all(p not in dataset_participant_sets[name] for name in dataset_stats_by_name)
+    )
 
     split_manifest = {
         "bids_root": str(bids_root),
         "task": task,
         "target": args.target,
         "target_column": "target_label",
+        "epoch_manifest": str(epoch_manifest_path) if epoch_manifest_path.exists() else None,
+        "qc_summary_json": str(qc_summary_path) if qc_summary_path is not None else None,
         "difficulty_bins": [
             {"label": label, "index": idx}
             for label, idx in sorted(difficulty_map.items(), key=lambda x: x[1])
@@ -910,6 +1470,21 @@ def main() -> None:
         "modalities_selected": selected_modalities,
         "require_all_selected_modalities": args.require_all_selected_modalities,
         "primary_dataset_for_splits": primary_dataset_name,
+        "participants_considered": participants_considered,
+        "subjects_filter": sorted(effective_subject_subset) if effective_subject_subset else None,
+        "subjects_filter_by_modality": (
+            {
+                modality: sorted(subjects)
+                for modality, subjects in modality_subject_filters.items()
+            }
+            if modality_subject_filters
+            else None
+        ),
+        "participants_omitted": {
+            "by_dataset": participants_omitted_by_dataset,
+            "from_primary_dataset": participants_omitted_from_primary_dataset,
+            "from_all_datasets": participants_omitted_from_all_datasets,
+        },
         "datasets": {
             name: {
                 "path": dataset_paths_by_name[name],
@@ -926,6 +1501,7 @@ def main() -> None:
             "group_holdout": _build_group_holdout_splits(
                 participants=primary_participants,
                 fractions=args.group_holdout_fracs,
+                counts=args.group_holdout_counts,
                 repeats=args.group_holdout_repeats,
                 random_seed=args.random_seed,
             ),
@@ -934,6 +1510,24 @@ def main() -> None:
                 dataset_stats_by_name=dataset_stats_by_name,
                 min_within_rows=args.min_within_rows,
             ),
+        },
+        "dataset_strategies": {
+            name: {
+                "leave_one_participant_out": _build_loso_splits(list(stats.get("participants", []))),
+                "group_holdout": _build_group_holdout_splits(
+                    participants=list(stats.get("participants", [])),
+                    fractions=args.group_holdout_fracs,
+                    counts=args.group_holdout_counts,
+                    repeats=args.group_holdout_repeats,
+                    random_seed=args.random_seed,
+                ),
+                "within_participant": _build_within_participant_plan(
+                    primary_stats=stats,
+                    dataset_stats_by_name=dataset_stats_by_name,
+                    min_within_rows=args.min_within_rows,
+                ),
+            }
+            for name, stats in dataset_stats_by_name.items()
         },
     }
     split_manifest_out.parent.mkdir(parents=True, exist_ok=True)
@@ -951,6 +1545,21 @@ def main() -> None:
         if args.include_tutorial or not meta.is_tutorial
     ]
     dropped_values = [meta.dropped_samples_trial for meta in trial_rows_considered if meta.dropped_samples_trial is not None]
+    verification = _build_fusion_verification(
+        selected_modalities=selected_modalities,
+        source_rows_by_modality=source_rows_by_modality,
+        modality_rows_out=modality_rows_out,
+        fused_rows=fused_rows,
+        dataset_stats_by_name=dataset_stats_by_name,
+        split_manifest=split_manifest,
+        require_all_selected_modalities=args.require_all_selected_modalities,
+        epoch_manifest_rows=epoch_manifest_rows,
+        epoch_manifest_path=epoch_manifest_path if epoch_manifest_rows is not None else None,
+    )
+    verification_json_out.parent.mkdir(parents=True, exist_ok=True)
+    verification_json_out.write_text(json.dumps(verification, indent=2) + "\n", encoding="utf-8")
+    verification_md_out.parent.mkdir(parents=True, exist_ok=True)
+    verification_md_out.write_text(_fusion_verification_markdown(verification), encoding="utf-8")
 
     summary = {
         "bids_root": str(bids_root),
@@ -965,7 +1574,22 @@ def main() -> None:
         "dropout_percentile": args.dropout_percentile,
         "keep_dropout_failed": args.keep_dropout_failed,
         "require_all_selected_modalities": args.require_all_selected_modalities,
-        "subjects_filter": sorted(subject_subset) if subject_subset else None,
+        "subjects_filter": sorted(effective_subject_subset) if effective_subject_subset else None,
+        "subjects_filter_by_modality": (
+            {
+                modality: sorted(subjects)
+                for modality, subjects in modality_subject_filters.items()
+            }
+            if modality_subject_filters
+            else None
+        ),
+        "qc_summary_json": str(qc_summary_path) if qc_summary_path is not None else None,
+        "participants_considered": participants_considered,
+        "participants_omitted": {
+            "by_dataset": participants_omitted_by_dataset,
+            "from_primary_dataset": participants_omitted_from_primary_dataset,
+            "from_all_datasets": participants_omitted_from_all_datasets,
+        },
         "trial_rows_considered": len(trial_rows_considered),
         "trial_drop_samples_distribution": {
             "n": len(dropped_values),
@@ -984,10 +1608,16 @@ def main() -> None:
         "dataset_class_counts": {
             name: stats["class_counts"] for name, stats in dataset_stats_by_name.items()
         },
+        "dataset_rows_per_participant": {
+            name: stats["rows_per_participant"] for name, stats in dataset_stats_by_name.items()
+        },
+        "verification": verification,
         "outputs": {
             **{f"features_ml_{modality}_tsv": path for modality, path in unimodal_paths.items()},
             "features_fused_tsv": str(fused_out),
             "split_manifest_json": str(split_manifest_out),
+            "verification_json": str(verification_json_out),
+            "verification_md": str(verification_md_out),
         },
     }
     summary_out.parent.mkdir(parents=True, exist_ok=True)
@@ -999,6 +1629,13 @@ def main() -> None:
     print(f"  Wrote fused ML table: {fused_out}")
     print(f"  Wrote split manifest: {split_manifest_out}")
     print(f"  Wrote fusion summary: {summary_out}")
+    print(f"  Wrote fusion verification JSON: {verification_json_out}")
+    print(f"  Wrote fusion verification Markdown: {verification_md_out}")
+    print(
+        "  Participant omissions: "
+        f"primary_dataset={len(participants_omitted_from_primary_dataset)}, "
+        f"all_datasets={len(participants_omitted_from_all_datasets)}"
+    )
 
 
 if __name__ == "__main__":

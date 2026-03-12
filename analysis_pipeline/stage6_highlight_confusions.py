@@ -431,6 +431,11 @@ def main() -> None:
         default="baseline_first",
         help="Label ordering for confusion outputs.",
     )
+    parser.add_argument(
+        "--allow-empty",
+        action="store_true",
+        help="Allow zero selected highlights without failing.",
+    )
     args = parser.parse_args()
 
     if not args.include_all and args.top_k_per_protocol < 1:
@@ -462,8 +467,14 @@ def main() -> None:
         feature_selectors=set(args.feature_selectors) if args.feature_selectors else None,
         explicit_selection=explicit_selection,
     )
+    if not selected and not args.allow_empty:
+        raise RuntimeError(
+            "No aggregate rows selected for confusion highlighting. "
+            "Adjust filters/top-k, or pass --allow-empty to bypass."
+        )
 
     highlights: list[dict[str, Any]] = []
+    skipped_no_confusion = 0
     for row in selected:
         dataset = str(row.get("dataset", ""))
         protocol = str(row.get("protocol", ""))
@@ -480,6 +491,7 @@ def main() -> None:
             label_order_strategy=args.label_order_strategy,
         )
         if summary is None:
+            skipped_no_confusion += 1
             continue
         summary["aggregate_metric"] = float(row.get(args.metric, 0.0))
         summary["aggregate_row"] = row
@@ -492,6 +504,12 @@ def main() -> None:
         )
         summary["confusion_png"] = str(png_path)
         highlights.append(summary)
+
+    if not highlights and not args.allow_empty:
+        raise RuntimeError(
+            "No confusion highlights could be built from selected rows. "
+            "Check Stage 6 evaluation contents or pass --allow-empty to bypass."
+        )
 
     result_payload = {
         "source_results_json": str(results_path),
@@ -506,6 +524,8 @@ def main() -> None:
             "selection_json": str(_resolve_path(args.selection_json)) if args.selection_json else None,
         },
         "label_order_strategy": args.label_order_strategy,
+        "n_selected_aggregate_rows": len(selected),
+        "n_skipped_no_confusion": skipped_no_confusion,
         "n_highlights": len(highlights),
         "highlights": highlights,
     }
@@ -517,6 +537,8 @@ def main() -> None:
     out_md.write_text(markdown_text, encoding="utf-8")
 
     print("Confusion highlights complete.")
+    print(f"  Selected aggregate rows: {len(selected)}")
+    print(f"  Skipped selections without confusion data: {skipped_no_confusion}")
     print(f"  Selected combinations: {len(highlights)}")
     print(f"  Output JSON: {out_json}")
     print(f"  Output Markdown: {out_md}")

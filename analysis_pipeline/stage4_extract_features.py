@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import math
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -11,6 +12,7 @@ from typing import Any
 
 import mne
 import numpy as np
+from eeg_units import ensure_eeg_data_in_volts
 from scipy import signal as sp_signal
 
 
@@ -26,8 +28,10 @@ BANDS_HZ: dict[str, tuple[float, float]] = {
 ROI_CHANNELS: dict[str, list[str]] = {
     "frontal": ["Fp1", "Fp2", "F3", "F4", "F7", "F8", "Fz"],
     "central": ["C3", "C4", "Cz"],
-    "parietal": ["P3", "P4", "P7", "P8", "Pz"],
-    "temporal": ["T7", "T8"],
+    # Legacy T5/T6 are normalized to P7/P8 in preprocessing, but they are
+    # still part of the lateral temporal coverage in this cap layout.
+    "parietal": ["P3", "P4", "Pz"],
+    "temporal": ["T7", "T8", "P7", "P8"],
     "occipital": ["O1", "O2"],
 }
 
@@ -173,6 +177,11 @@ def _write_tsv(path: Path, rows: list[dict[str, str]], preferred_prefix: list[st
             writer.writerow({k: row.get(k, "") for k in fieldnames})
 
 
+def _rows_per_participant(rows: list[dict[str, str]]) -> dict[str, int]:
+    counts = Counter((row.get("participant_id") or "").strip() for row in rows if (row.get("participant_id") or "").strip())
+    return dict(sorted((str(k), int(v)) for k, v in counts.items()))
+
+
 def _safe_mean(values: np.ndarray) -> float | None:
     if values.size == 0:
         return None
@@ -299,7 +308,6 @@ def _roi_indices(ch_names: list[str]) -> dict[str, np.ndarray]:
     for roi, names in ROI_CHANNELS.items():
         idx = [i for i, n in enumerate(normalized) if n in names]
         by_roi[roi] = np.asarray(idx, dtype=np.int32)
-    by_roi["global"] = np.arange(len(ch_names), dtype=np.int32)
     return by_roi
 
 
@@ -670,7 +678,9 @@ def _load_cleaned_eeg(subject_root: Path, task: str, subject: str) -> tuple[np.n
     if not path.exists():
         return None
     raw = mne.io.read_raw_fif(path, preload=True, verbose="ERROR")
-    data = raw.get_data().astype(np.float32, copy=False)
+    data_raw = raw.get_data()
+    data_scaled, _ = ensure_eeg_data_in_volts(data_raw)
+    data = data_scaled.astype(np.float32, copy=False)
     sfreq = float(raw.info["sfreq"])
     ch_names = list(raw.ch_names)
     times = raw.times.astype(np.float64, copy=False)
@@ -794,8 +804,7 @@ def _row_prefix_from_manifest(row: dict[str, str], preproc_version: str) -> dict
     }
 
 
-def _load_preproc_version(reports_dir: Path) -> str:
-    summary_path = reports_dir / "preprocess_summary.json"
+def _load_preproc_version(summary_path: Path) -> str:
     if not summary_path.exists():
         return "stage2_preprocess_unknown"
     try:
@@ -828,7 +837,8 @@ def _extract_eeg_features_from_epoch(
     if "data" not in payload.files or "time" not in payload.files:
         return None
 
-    x = payload["data"]
+    x_raw = payload["data"]
+    x, _ = ensure_eeg_data_in_volts(x_raw)
     t = payload["time"]
     sfreq = None
     if t.size > 2:
@@ -1000,6 +1010,14 @@ def main() -> None:
         default=None,
         help="Feature summary output JSON path (default: analysis_pipeline/reports/feature_summary.json).",
     )
+    parser.add_argument(
+        "--preprocess-summary-json",
+        default=None,
+        help=(
+            "Path to Stage 2 preprocess summary JSON used for provenance "
+            "(default: analysis_pipeline/reports/preprocess_summary.json)."
+        ),
+    )
     parser.add_argument("--baseline-seconds", type=float, default=60.0)
     parser.add_argument("--pupil-low-conf-threshold", type=float, default=0.60)
     parser.add_argument(
@@ -1024,7 +1042,11 @@ def main() -> None:
     cleaned_root = Path(args.cleaned_root).resolve() if args.cleaned_root else _cleaned_root_default()
     out_dir = Path(args.out_dir).resolve() if args.out_dir else _features_dir_default()
     summary_out = Path(args.summary_json).resolve() if args.summary_json else _default_summary_json()
-    reports_dir = _reports_dir()
+    preprocess_summary_path = (
+        Path(args.preprocess_summary_json).resolve()
+        if args.preprocess_summary_json
+        else _reports_dir() / "preprocess_summary.json"
+    )
 
     manifest_rows = _read_tsv_rows(epoch_manifest_path)
     if not manifest_rows:
@@ -1040,7 +1062,8 @@ def main() -> None:
         raise ValueError("No epoch rows left after subject filtering.")
 
     subjects = sorted({row.get("participant_id", "") for row in filtered if row.get("participant_id")})
-    preproc_version = _load_preproc_version(reports_dir)
+    manifest_rows_per_participant = _rows_per_participant(filtered)
+    preproc_version = _load_preproc_version(preprocess_summary_path)
     print(
         f"Stage 4 starting. task={task} subjects={len(subjects)} "
         f"epoch_rows={len(filtered)}"
@@ -1128,6 +1151,23 @@ def main() -> None:
     ]
     hr_arr = np.asarray(hr_values, dtype=np.float64) if hr_values else np.array([], dtype=np.float64)
     pupil_arr = np.asarray(pupil_values, dtype=np.float64) if pupil_values else np.array([], dtype=np.float64)
+    rows_out_per_participant = {
+        "eeg": _rows_per_participant(eeg_rows),
+        "ecg": _rows_per_participant(ecg_rows),
+        "pupil": _rows_per_participant(pupil_rows),
+    }
+    participants_omitted = {
+        "from_eeg": sorted(p for p in subjects if rows_out_per_participant["eeg"].get(p, 0) == 0),
+        "from_ecg": sorted(p for p in subjects if rows_out_per_participant["ecg"].get(p, 0) == 0),
+        "from_pupil": sorted(p for p in subjects if rows_out_per_participant["pupil"].get(p, 0) == 0),
+    }
+    participants_omitted["from_all_modalities"] = sorted(
+        p
+        for p in subjects
+        if rows_out_per_participant["eeg"].get(p, 0) == 0
+        and rows_out_per_participant["ecg"].get(p, 0) == 0
+        and rows_out_per_participant["pupil"].get(p, 0) == 0
+    )
     summary = {
         "bids_root": str(bids_root),
         "task": task,
@@ -1135,12 +1175,17 @@ def main() -> None:
         "cleaned_root": str(cleaned_root),
         "out_dir": str(out_dir),
         "subjects_processed": len(subjects),
+        "participants_in_manifest": subjects,
+        "n_participants_in_manifest": len(subjects),
+        "manifest_rows_per_participant": manifest_rows_per_participant,
         "manifest_rows_in": len(filtered),
         "rows_out": {
             "eeg": len(eeg_rows),
             "ecg": len(ecg_rows),
             "pupil": len(pupil_rows),
         },
+        "rows_out_per_participant": rows_out_per_participant,
+        "participants_omitted": participants_omitted,
         "preproc_version": preproc_version,
         "baseline_seconds": args.baseline_seconds,
         "pupil_low_conf_threshold": args.pupil_low_conf_threshold,
@@ -1178,6 +1223,13 @@ def main() -> None:
     print(f"Wrote ECG features: {ecg_out}")
     print(f"Wrote Pupil features: {pupil_out}")
     print(f"Wrote feature summary: {summary_out}")
+    print(
+        "Participant omission counts: "
+        f"eeg={len(participants_omitted['from_eeg'])}, "
+        f"ecg={len(participants_omitted['from_ecg'])}, "
+        f"pupil={len(participants_omitted['from_pupil'])}, "
+        f"all_modalities={len(participants_omitted['from_all_modalities'])}"
+    )
 
 
 if __name__ == "__main__":

@@ -1,0 +1,165 @@
+version: 1
+
+paths:
+  bids_root: "./data/bids_arithmetic"
+  python_executable: "python"
+
+outputs:
+  root: "analysis_pipeline/runs/pipeline_unified_classic_nn_baseline_overlap3s_50pct_preproc"
+  clean_start: true
+
+reports:
+  run_manifest: "{reports_dir}/run_manifest.json"
+
+stages:
+  stage0: true
+  stage1: true
+  stage2: true
+  stage3: true
+  stage4: true
+  stage5: true
+  stage6: true
+  stage6_confusions: true
+  stage6_publication_report: true
+
+stage_args:
+  stage0:
+    strict: true
+    out: "{reports_dir}/trial_table_bids_arithmetic.tsv"
+    summary_json: "{reports_dir}/trial_table_bids_arithmetic_summary.json"
+  stage1:
+    strict: true
+    trial_table: "{reports_dir}/trial_table_bids_arithmetic.tsv"
+    out_subject_table: "{reports_dir}/qc_subject_table.tsv"
+    out_summary_json: "{reports_dir}/qc_dataset_summary.json"
+    participant_bids_sample_drop_summary_csv: "{reports_dir}/participant_bids_sample_drop_summary.csv"
+    fig_dir: "{reports_dir}/figures"
+    max_dropped_samples_main_trial_mean: 20.0
+    max_dropped_samples_main_trial_p95: 35.0
+    max_dropped_samples_main_trial_mean_ecg: 20.0
+    max_dropped_samples_main_trial_p95_ecg: 35.0
+  stage2:
+    eeg_filter_method: "iir_butter"
+    eeg_butter_order: 3
+    eeg_l_freq: 2.0
+    eeg_h_freq: 40.0
+  stage3:
+    trial_table: "{reports_dir}/trial_table_bids_arithmetic.tsv"
+    out_root: "{epochs_dir}"
+    manifest_out: "{reports_dir}/epoch_manifest.tsv"
+    summary_json: "{reports_dir}/epoch_summary.json"
+    drop_log_out: "{reports_dir}/epoch_drop_log.tsv"
+    participant_sample_summary_csv: "{reports_dir}/participant_sample_capture_drop_summary.csv"
+    fig_dir: "{reports_dir}/figures"
+    window_mode: "calc_fixed"
+    fixed_window_s: 6.0
+    sliding_window_s: 3.0
+    sliding_step_s: 1.5
+    allow_overlap: true
+    min_ecg_window_s: 3.0
+    max_dropped_samples_eeg: 35.0
+    max_dropped_samples_ecg: 35.0
+  stage4:
+    epoch_manifest: "{reports_dir}/epoch_manifest.tsv"
+    out_dir: "{features_dir}"
+    summary_json: "{reports_dir}/feature_summary.json"
+  stage5:
+    trial_table: "{reports_dir}/trial_table_bids_arithmetic.tsv"
+    epoch_manifest: "{reports_dir}/epoch_manifest.tsv"
+    features_dir: "{features_dir}"
+    include_tutorial: true
+    dropout_policy: "absolute"
+    dropout_threshold: 35.0
+    group_holdout_fracs: []
+    group_holdout_counts: [2]
+    group_holdout_repeats: 5
+    min_within_rows: 1
+    fused_out: "{features_dir}/features_fused_tutorial_baseline.tsv"
+    split_manifest_out: "{features_dir}/split_manifest_tutorial_baseline.json"
+    summary_json: "{reports_dir}/fusion_summary_tutorial_baseline.json"
+    unimodal_tag: "tutorial_baseline_overlap3s_50pct_preproc"
+
+stage6:
+  run_tag_prefix: "unified_classic_nn_baseline_overlap3s_50pct_preproc"
+  results_json_template: "{reports_dir}/ml_results_{scenario}_classic_nn.json"
+  summary_md_template: "{reports_dir}/ml_summary_{scenario}_classic_nn.md"
+  base_args:
+    split_manifest: "{features_dir}/split_manifest_tutorial_baseline.json"
+    datasets: ["eeg", "ecg", "pupil", "fused"]
+    protocols: ["pooled_stratified", "group_holdout", "within_participant"]
+    pooled_stratified_folds: 5
+    pooled_stratified_no_folds: false
+    pooled_stratified_test_size: 0.2
+    within_participant_no_folds: true
+    within_participant_test_size: 0.2
+    models:
+      [
+        "logreg",
+        "knn",
+        "svm",
+        "gaussian_nb",
+        "decision_tree",
+        "mlp",
+        "rf",
+        "lstm1d",
+        "gru1d",
+        "cnn1d",
+        "transformer",
+      ]
+    feature_selectors: ["none"]
+    inner_folds: 3
+    max_param_combos: 6
+    max_outer_splits_per_protocol: null
+    clip_lower_quantile: 0.01
+    clip_upper_quantile: 0.99
+    random_seed: 42
+    torch_device: "auto"
+    baseline_from_tutorial_label: "baseline"
+    min_aggregate_rows_per_dataset_protocol: 1
+    eeg_condition_psd_fmin: 2.0
+    live_confusion_pngs: true
+    live_confusion_png_dir: "{reports_dir}/confusion_pngs_live"
+    live_confusion_png_cmap: "Blues"
+    live_confusion_png_dpi: 150
+    eeg_condition_psd_dir: "{reports_dir}/eeg_condition_psd"
+    models_root: "{models_dir}"
+  class_scenarios:
+    - name: "baseline_all_bins"
+    - name: "baseline_omit_easiest"
+      drop_labels: ["0.6-1.5"]
+    - name: "baseline_omit_hardest"
+      drop_labels: ["6.0-6.9"]
+    - name: "baseline_low_high_omit_hardest"
+      drop_labels: ["6.0-6.9"]
+      merge_map:
+        "0.6-1.5": "low_1_2_3"
+        "1.5-2.4": "low_1_2_3"
+        "2.4-3.3": "low_1_2_3"
+        "3.3-4.2": "high_4_5_6"
+        "4.2-5.1": "high_4_5_6"
+        "5.1-6.0": "high_4_5_6"
+    - name: "baseline_grouped_4class_omit_hardest"
+      drop_labels: ["6.0-6.9"]
+      merge_map:
+        "0.6-1.5": "low_1_2"
+        "1.5-2.4": "low_1_2"
+        "2.4-3.3": "mid_3_4"
+        "3.3-4.2": "mid_3_4"
+        "4.2-5.1": "high_5_6"
+        "5.1-6.0": "high_5_6"
+
+stage6_confusions:
+  out_json_template: "{reports_dir}/confusion_highlights_{scenario}_classic_nn.json"
+  out_md_template: "{reports_dir}/confusion_highlights_{scenario}_classic_nn.md"
+  args:
+    metric: "balanced_accuracy_mean"
+    label_order_strategy: "baseline_first"
+    top_k_per_protocol: 1
+    include_all: true
+    out_png_dir: "{reports_dir}/confusion_pngs"
+
+stage6_publication_report:
+  args:
+    run_manifest_json: "{reports_dir}/run_manifest.json"
+    out_md: "{reports_dir}/publication_full_report.md"
+    out_json: "{reports_dir}/publication_full_report.json"
