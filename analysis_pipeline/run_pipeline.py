@@ -48,6 +48,7 @@ STAGE_ORDER = [
     "stage6",
     "stage6_confusions",
     "stage6_publication_report",
+    "stage7_significance",
 ]
 
 
@@ -867,6 +868,40 @@ def _plan_pipeline(
         name="stage6_publication_report",
         command=cmd_stage6_pub,
         outputs=[str(stage6_pub_out_md), str(stage6_pub_out_json)],
+    )
+
+    # ------------------------------------------------------------------
+    # Stage 7 — significance and bootstrap statistics
+    # ------------------------------------------------------------------
+    stage7_cfg = config.get("stage7_significance", {})
+    stage7_args = dict(stage7_cfg.get("args", {}))
+    if "baseline_reports" not in stage7_args:
+        stage7_args["baseline_reports"] = str(output_layout.reports_dir)
+    stage7_out_json = _resolve_output_path_or_default(
+        stage7_args.get("out_json"),
+        output_layout.reports_dir / "significance_summary.json",
+        repo_root=repo_root,
+    )
+    stage7_out_md = _resolve_output_path_or_default(
+        stage7_args.get("out_md"),
+        output_layout.reports_dir / "significance_summary.md",
+        repo_root=repo_root,
+    )
+    _setdefault_arg(stage7_args, "out_json", stage7_out_json)
+    _setdefault_arg(stage7_args, "out_md", stage7_out_md)
+    cmd_stage7 = [
+        python_exe,
+        "-m",
+        "analysis_pipeline.stage7_significance",
+    ] + _to_cli_args(stage7_args)
+    _append_stage_if_enabled(
+        planned=planned,
+        config=config,
+        stage="stage7_significance",
+        only=only,
+        name="stage7_significance",
+        command=cmd_stage7,
+        outputs=[str(stage7_out_json), str(stage7_out_md)],
     )
 
     return planned, manifest_out

@@ -21,6 +21,7 @@ stages:
   stage6: true
   stage6_confusions: true
   stage6_publication_report: true
+  stage7_significance: true
 
 stage_args:
   stage0:
@@ -163,3 +164,19 @@ stage6_publication_report:
     run_manifest_json: "{reports_dir}/run_manifest.json"
     out_md: "{reports_dir}/publication_full_report.md"
     out_json: "{reports_dir}/publication_full_report.json"
+
+stage7_significance:
+  # Identical Stage 7 stanza to the 6 s baseline profile but pointed at
+  # this profile's own reports as the "baseline" anchor. The overlap
+  # reports are paired against the 6 s baseline output written by the
+  # other profile, so this profile reproduces the same significance
+  # numbers regardless of which configuration triggered the run.
+  args:
+    baseline_reports: "analysis_pipeline/runs/pipeline_unified_classic_nn_baseline_preproc/reports"
+    overlap_reports: "{reports_dir}"
+    baseline_qc_summary: "analysis_pipeline/runs/pipeline_unified_classic_nn_baseline_preproc/reports/qc_dataset_summary.json"
+    out_json: "{reports_dir}/significance_summary.json"
+    out_md: "{reports_dir}/significance_summary.md"
+    n_bootstrap: 2000
+    n_permutations: 10000
+    random_seed: 42

@@ -21,6 +21,7 @@ stages:
   stage6: true
   stage6_confusions: true
   stage6_publication_report: true
+  stage7_significance: true
 
 stage_args:
   stage0:
@@ -159,3 +160,22 @@ stage6_publication_report:
     run_manifest_json: "{reports_dir}/run_manifest.json"
     out_md: "{reports_dir}/publication_full_report.md"
     out_json: "{reports_dir}/publication_full_report.json"
+
+stage7_significance:
+  # Stage 7 derives every inferential statistic referenced in the
+  # manuscript's Statistical Significance Procedures section:
+  # paired Wilcoxon (3 s overlap vs 6 s baseline), 2000-sample
+  # bootstrap CIs over outer-fold balanced accuracies, one-sided
+  # Wilcoxon vs chance, and a 10 000-iteration label-shuffle
+  # permutation test with Bonferroni correction over the full
+  # cell grid. Runs after Stage 6 and consumes its
+  # ml_results_<scenario>_classic_nn.json files.
+  args:
+    baseline_reports: "{reports_dir}"
+    overlap_reports: "analysis_pipeline/runs/pipeline_unified_classic_nn_baseline_overlap3s_50pct_preproc/reports"
+    baseline_qc_summary: "{reports_dir}/qc_dataset_summary.json"
+    out_json: "{reports_dir}/significance_summary.json"
+    out_md: "{reports_dir}/significance_summary.md"
+    n_bootstrap: 2000
+    n_permutations: 10000
+    random_seed: 42
